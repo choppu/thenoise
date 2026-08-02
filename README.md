@@ -84,6 +84,10 @@ python -m diffuse.server generate --model anima \
 ```
 
 Only one model is loaded at a time (loading another swaps the resident one).
+`--model` is optional: when omitted, the model type is detected automatically from
+the `--dit` checkpoint (each model class owns a `detect()` routine that inspects the
+safetensors keys). If `--model` is given it is validated against the detected type.
+The text encoder and VAE are assumed to match the detected model.
 
 ## API
 

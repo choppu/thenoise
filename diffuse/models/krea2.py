@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 
 class Krea2Model:
+    name = "krea2"
+
     # Model-owned defaults (incl. advanced sampler params -- not exposed to API/CLI).
     DEFAULT_STEPS = 8
     DEFAULT_GUIDANCE_SCALE = 0.0
@@ -43,6 +45,19 @@ class Krea2Model:
     DEFAULT_Y1 = 0.5
     DEFAULT_Y2 = 1.15
     DEFAULT_MU = None
+
+    @staticmethod
+    def detect(f) -> bool:
+        """True if this handle is the Krea2 (single-stream MMDiT) DiT.
+
+        Krea2 DiTs expose ``x_embedder.`` and ``txtfusion.`` and have no
+        ``model.diffusion_model`` prefix (which is the Anima signature).
+        """
+        keys = f.keys()
+        has_x_embedder = any(k.startswith("x_embedder.") for k in keys)
+        has_txtfusion = any(k.startswith("txtfusion.") for k in keys)
+        no_anima_prefix = not any(k.startswith("model.diffusion_model.") for k in keys)
+        return has_x_embedder and has_txtfusion and no_anima_prefix
 
     def __init__(
         self,

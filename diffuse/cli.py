@@ -33,9 +33,9 @@ def build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve", help="run the FastAPI HTTP server")
     serve.add_argument("-c", "--config", default=None,
                        help="path to config.json (server knobs only)")
-    serve.add_argument("--model", required=True,
+    serve.add_argument("--model",
                        choices=["krea2", "anima"],
-                       help="which model to load (Phase 3 makes this optional via detection)")
+                       help="which model to load (default: detected from --dit)")
     _add_model_paths(serve)
     serve.add_argument("--host", help="override config host")
     serve.add_argument("--port", type=int, help="override config port")
@@ -44,9 +44,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     # generate (implemented in Phase 4)
     gen = sub.add_parser("generate", help="run one generation and save a PNG")
-    gen.add_argument("--model", required=True,
+    gen.add_argument("--model",
                      choices=["krea2", "anima"],
-                     help="which model to load")
+                     help="which model to load (default: detected from --dit)")
     _add_model_paths(gen)
     gen.add_argument("--prompt", required=True)
     gen.add_argument("--negative-prompt", default="")

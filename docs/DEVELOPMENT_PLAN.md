@@ -36,8 +36,7 @@ diffuse/
     krea2_mmdit.py    #   SingleStreamDiT (from musubi_tuner)
     krea2_encoder.py  #   Qwen3-VL conditioner
     anima_models.py   #   Anima DiT + LLM adapter
-  vae/                # plugin registry of VAE classes
-    base.py           #   abstract VAEDecoder (detect/load/decode)
+  vae/                # VAE implementation (no separate detection)
     qwen_image.py     #   QwenImageVAE (single copy, was duplicated)
   sampling/           # shared flow-matching sampler + rotary helpers
   strategies/         # tokenize/text-encode strategies (from sd_scripts)
@@ -45,15 +44,14 @@ diffuse/
 scripts/
   download_krea2.py
   download_anima.py
-  debug_anima.py      # superseded by `diffuse generate`
 vendor/               # REMOVED after migration
 ```
 
-## Extensibility model (Req: add new models/VAEs cleanly)
+## Extensibility model (Req: add new models cleanly)
 
-New models and new VAEs are added by registering a class that implements a small
-interface and **owns its own detection routine**. The runtime never hard-codes a type;
-it asks each registered class whether it recognizes the given checkpoints.
+New models are added by registering a class that implements a small interface and
+**owns its own detection routine**. The runtime never hard-codes a type; it asks each
+registered class whether it recognizes the DiT checkpoint.
 
 ```python
 # diffuse/models/base.py
@@ -70,37 +68,27 @@ class DiffusionModel(ABC):
         """
         ...
 
-    def load(self, *, dit, text_encoder, vae, device, dtype, loras) -> None: ...
     def generate(self, *, prompt, negative_prompt, width, height, steps,
-                 guidance_scale, seed, num_images) -> list[Image.Image]: ...
-```
-
-```python
-# diffuse/vae/base.py
-class VAEDecoder(ABC):
-    name: str
-    @staticmethod
-    def detect(f) -> bool: ...   # same loaded-handle convention
-    def load(self, *, path, device, dtype) -> None: ...
-    def decode(self, latent) -> torch.Tensor: ...
+                 guidance_scale, seed) -> Image.Image: ...
 ```
 
 ```python
 # diffuse/models/__init__.py
 MODEL_CATALOG = [Krea2Model, AnimaModel]
-
-# diffuse/vae/__init__.py
-VAE_CATALOG = [QwenImageVAE]
 ```
 
-The `Runtime` walks the catalogs in order, opening each checkpoint file **once** and
-passing the same handle to every class's `detect()`; it loads the first class whose
-`detect()` returns True (for models, keyed on the DiT handle; for VAEs, on the `--vae`
-handle). Adding `NewModel` = write the class, append it to `MODEL_CATALOG`, done.
+The `Runtime` walks the catalog, opening the **DiT file once** and passing the same
+handle to every class's `detect()`; it loads the first class whose `detect()` returns
+True. Adding `NewModel` = write the class, append it to `MODEL_CATALOG`, done.
+
+> We detect **only the main model (DiT)**. Each model is paired with a specific text
+> encoder and VAE, so once the DiT is identified we assume the `--text-encoder` and
+> `--vae` checkpoints are of the correct type — if they aren't, loading throws and we
+> fail anyway. There is no separate VAE/encoder detection.
 
 > The **concrete body** of each `detect()` is a trivial implementation detail to be
 > tackled later (the key-signature intuition below is good enough). The priority is
-> getting the **scaffolding** right: the handle-passing protocol, the catalogs, and the
+> getting the **scaffolding** right: the handle-passing protocol, the catalog, and the
 > runtime resolution flow.
 
 ## Model-type auto-detection (Req 3)
@@ -124,14 +112,13 @@ Notes:
   calling each class's `detect()` on the opened `--dit` handle. When supplied it is
   validated against the detected class.
 
-## VAE type differentiation (Req: new VAE types)
+## VAE / text-encoder handling
 
-The VAE is decoupled from the model and has its own catalog (`VAE_CATALOG`) and
-`detect()` interface, so new VAE types slot in alongside the current one. For now the
-only VAE is the **shared Qwen-Image VAE** (same for Krea2 and Anima), so its `detect()`
-simply returns `True` — correct-but-coarse, exactly as intended. The architecture is in
-place to make it strict later (e.g. match `decoder.middle.` / `encoder.` keys, or
-per-VAE key signatures) without touching the runtime or the model classes.
+The VAE and text encoder are **paired with the main model** and loaded directly by the
+adapter. We do **not** detect them: once the DiT type is known, the `--text-encoder`
+and `--vae` checkpoints are assumed correct, and a wrong type simply throws during
+load. New VAE types are added by changing the adapter that loads them — no detection
+scaffolding needed.
 
 ## Advanced model parameters (Req 4)
 
@@ -190,15 +177,15 @@ done last with no behavior change.
 - Environment-variable overrides for paths are removed (CLI is now the source of truth).
 
 ### Phase 3 — Auto-detect model type (Req 3)
-- Add `diffuse/models/base.py` + `diffuse/vae/base.py` with the `detect(f)` protocol
-  and the `MODEL_CATALOG` / `VAE_CATALOG` registries.
+- Add `diffuse/models/base.py` with the `detect(f)` protocol and the
+  `MODEL_CATALOG` registry (no VAE/encoder detection — only the main model).
 - `Runtime.resolve()` opens the DiT file once (`safetensors.safe_open`) and passes the
-  handle to each class's `detect()` until one matches; same for the VAE handle.
+  handle to each class's `detect()` until one matches.
 - CLI flow: if `--model` omitted, resolve from the `--dit` handle. Validate `--model`
   when given. Wire detection into `Runtime.load()` so HTTP and CLI share one code path.
 - Implement `AnimaModel.detect()` fully (validated against the on-disk checkpoint);
-  leave `Krea2Model.detect()` and `QwenImageVAE.detect()` as the coarse stubs above
-  until the Krea2 checkpoint is available.
+  leave `Krea2Model.detect()` as the coarse stub until the Krea2 checkpoint is
+  available.
 
 ### Phase 4 — CLI beside HTTP (Req 4)
 - Add a `diffuse generate` subcommand:

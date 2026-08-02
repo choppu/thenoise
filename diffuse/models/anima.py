@@ -37,12 +37,22 @@ _VAE_SCALE = 8
 
 
 class AnimaModel:
+    name = "anima"
+
     # Model-owned defaults (incl. advanced sampler params -- not exposed to API/CLI).
     DEFAULT_STEPS = 50
     DEFAULT_GUIDANCE_SCALE = 3.5
     DEFAULT_WIDTH = 1024
     DEFAULT_HEIGHT = 1024
     DEFAULT_FLOW_SHIFT = 5.0
+
+    @staticmethod
+    def detect(f) -> bool:
+        """True if this handle is the Anima DiT.
+
+        Anima DiTs expose keys under the ``model.diffusion_model.`` prefix.
+        """
+        return any(k.startswith("model.diffusion_model.") for k in f.keys())
 
     def __init__(
         self,

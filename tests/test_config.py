@@ -53,7 +53,7 @@ def test_missing_file_raises(tmp_path):
 
 def test_cli_serve_parses_model_paths():
     args = build_parser().parse_args([
-        "serve", "--model", "krea2",
+        "serve",
         "--dit", "dit.safetensors",
         "--vae", "vae.safetensors",
         "--text-encoder", "te.safetensors",
@@ -61,16 +61,25 @@ def test_cli_serve_parses_model_paths():
         "--port", "9000",
     ])
     assert args.command == "serve"
-    assert args.model == "krea2"
+    assert args.model is None  # optional; detected from --dit at load time
     assert args.dit == "dit.safetensors"
     assert args.lora == ["lora1.safetensors"]
     assert args.lora_multiplier == ["0.5"]
     assert args.port == 9000
 
 
+def test_cli_serve_with_model():
+    args = build_parser().parse_args([
+        "serve", "--model", "krea2",
+        "--dit", "d.safetensors", "--vae", "v.safetensors",
+        "--text-encoder", "te.safetensors",
+    ])
+    assert args.model == "krea2"
+
+
 def test_cli_serve_requires_paths():
     with pytest.raises(SystemExit):
-        build_parser().parse_args(["serve", "--model", "anima"])
+        build_parser().parse_args(["serve"])
 
 
 def test_cli_generate_parses():

@@ -1,14 +1,16 @@
 """Single-model runtime: loads exactly one DiffusionModel at a time.
 
-Replaces the multi-model registry. The runtime is deliberately thin and
-model-agnostic: it knows how to construct a model class by name and holds the
-single resident instance. Loading a new model swaps (unloads + GCs) the previous
-one, so only one set of weights is ever resident.
+Replaces the multi-model registry. The runtime is deliberately thin: it resolves the
+model class (either from the CLI's ``--model`` or by detecting the DiT type), holds
+the single resident instance, and swaps (unloads + GCs) on reload so only one set of
+weights is ever resident.
+
+The text encoder and VAE are assumed to match the detected model; a wrong type throws
+during load and we fail anyway.
 """
 from __future__ import annotations
 
 import gc
-import importlib
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -30,28 +32,32 @@ class NotLoadedError(RuntimeError):
     """Raised when no model is loaded."""
 
 
-# name -> (class name, module) within the diffuse package.
-# Phase 3 replaces this with a catalog of model classes that own their own detect().
-_MODEL_CLASSES = {
-    "krea2": ("Krea2Model", ".krea2"),
-    "anima": ("AnimaModel", ".anima"),
-}
-
-
 class Runtime:
     def __init__(self, settings):
         self._settings = settings
         self._model: Any = None
         self._model_name: Optional[str] = None
 
-    def load(self, model: str, paths: ModelPaths) -> None:
-        name = model.strip().lower()
-        if name not in _MODEL_CLASSES:
-            raise ValueError(
-                f"unknown model '{model}' (choose from {sorted(_MODEL_CLASSES)})"
-            )
-        cls_name, module = _MODEL_CLASSES[name]
-        cls = getattr(importlib.import_module(module, package=__package__), cls_name)
+    def load(self, model: Optional[str], paths: ModelPaths) -> None:
+        from .models import MODEL_CATALOG, resolve
+
+        if model:
+            name = model.strip().lower()
+            cls = next((c for c in MODEL_CATALOG if c.name == name), None)
+            if cls is None:
+                raise ValueError(
+                    f"unknown model '{model}' (choose from "
+                    f"{sorted(c.name for c in MODEL_CATALOG)})"
+                )
+            # Validate the explicit choice against the actual DiT type.
+            detected = resolve(paths.dit_path)
+            if detected.name != name:
+                raise ValueError(
+                    f"--model {name} does not match detected DiT type '{detected.name}'"
+                )
+        else:
+            cls = resolve(paths.dit_path)
+            name = cls.name
 
         kwargs = dict(
             dit_path=paths.dit_path,
