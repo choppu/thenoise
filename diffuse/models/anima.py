@@ -26,6 +26,7 @@ from typing import Optional
 
 import torch
 from PIL import Image
+from safetensors.torch import load_file
 from tqdm import tqdm
 
 from diffuse.dit.anima import utils as anima_utils
@@ -65,10 +66,16 @@ class AnimaModel:
         text_encoder_path: str,
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
+        lora_weights: Optional[list] = None,
+        lora_multipliers: Optional[list] = None,
     ):
         self.device = device
         self.dtype = dtype
         self._lock = threading.Lock()
+
+        # LoRA state dicts are merged into the base weights at load time.
+        lora_sds = [load_file(p) for p in (lora_weights or [])]
+        mults = list(lora_multipliers) if lora_multipliers else [1.0] * len(lora_sds)
 
         # DiT (bf16, SDPA attention).
         logger.info("Loading Anima DiT from %s", dit_path)
@@ -80,6 +87,8 @@ class AnimaModel:
             loading_device=device,
             dit_weight_dtype=dtype,
             fp8_scaled=False,
+            lora_weights_list=lora_sds or None,
+            lora_multipliers=mults or None,
         )
         self.dit.eval().requires_grad_(False)
 

@@ -57,9 +57,8 @@ class Runtime:
             text_encoder_path=paths.text_encoder_path,
             device=self._settings.device,
         )
-        if name == "krea2":
-            kwargs["lora_weights"] = paths.lora_weights or None
-            kwargs["lora_multipliers"] = paths.lora_multipliers or None
+        kwargs["lora_weights"] = paths.lora_weights or None
+        kwargs["lora_multipliers"] = paths.lora_multipliers or None
 
         self._unload()  # swap: only one model resident at a time
         logger.info("Loading model '%s'", name)
