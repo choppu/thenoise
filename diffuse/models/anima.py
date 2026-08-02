@@ -27,8 +27,10 @@ from typing import Optional
 import torch
 from PIL import Image
 
-from sd_scripts import anima_utils, hunyuan_image_utils, qwen_image_autoencoder_kl
-from sd_scripts.strategy_anima import AnimaTextEncodingStrategy, AnimaTokenizeStrategy
+from diffuse.dit.anima import utils as anima_utils
+from diffuse.dit.anima import hunyuan as hunyuan_image_utils
+from diffuse.dit.anima.strategy import AnimaTextEncodingStrategy, AnimaTokenizeStrategy
+from diffuse.vae import load_vae
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +101,7 @@ class AnimaModel:
 
         # VAE.
         logger.info("Loading Anima VAE from %s", vae_path)
-        self.vae = qwen_image_autoencoder_kl.load_vae(
+        self.vae = load_vae(
             vae_path,
             device=device,
             disable_mmap=True,
