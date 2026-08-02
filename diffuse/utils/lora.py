@@ -124,6 +124,10 @@ def load_safetensors_with_lora(
                 # check if this weight has LoRA weights
                 lora_name_without_prefix = model_weight_key.rsplit(".", 1)[0]  # remove trailing ".weight"
                 found = False
+
+                # sd-scripts naming: underscore-joined path, lora_down/lora_up.
+                # e.g. model "blocks.0.attn.gate.weight" <-> LoRA
+                # "lora_unet_blocks_0_attn_gate.lora_down.weight".
                 for prefix in ["lora_unet_", ""]:
                     lora_name = prefix + lora_name_without_prefix.replace(".", "_")
                     down_key = lora_name + ".lora_down.weight"
@@ -132,6 +136,21 @@ def load_safetensors_with_lora(
                     if down_key in lora_weight_keys and up_key in lora_weight_keys:
                         found = True
                         break
+
+                if not found:
+                    # diffusers-style naming: dotted path matching the model key (with a
+                    # "diffusion_model." prefix), lora_A/lora_B instead of lora_down/lora_up.
+                    # e.g. model "txtfusion.layerwise_blocks.0.mlp.gate.weight" <-> LoRA
+                    # "diffusion_model.txtfusion.layerwise_blocks.0.mlp.gate.lora_A.weight".
+                    for prefix in ["diffusion_model.", ""]:
+                        lora_name = prefix + lora_name_without_prefix
+                        a_key = lora_name + ".lora_A.weight"
+                        b_key = lora_name + ".lora_B.weight"
+                        alpha_key = lora_name + ".alpha"
+                        if a_key in lora_weight_keys and b_key in lora_weight_keys:
+                            down_key, up_key = a_key, b_key
+                            found = True
+                            break
 
                 if found:
                     # Standard LoRA merge
