@@ -1,0 +1,16 @@
+{
+  "device": "cuda",
+  "dtype": "bfloat16",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "krea2": {
+    "dit_path": "./models/krea2/turbo.safetensors",
+    "vae_path": "./models/krea2/split_files/vae/qwen_image_vae.safetensors",
+    "text_encoder_path": "./models/krea2/text_encoders/qwen3vl_4b_bf16.safetensors"
+  },
+  "anima": {
+    "dit_path": "./models/anima/anima.safetensors",
+    "vae_path": "./models/anima/qwen_image_vae.safetensors",
+    "text_encoder_path": "./models/anima/qwen3_06b.safetensors"
+  }
+}

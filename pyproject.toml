@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diffuse-rocm"
+version = "0.1.0"
+description = "Focused diffusion inference engine for ROCm (Strix Halo / gfx1151)"
+requires-python = ">=3.10"
+# NOTE: torch is intentionally NOT listed here. This is customary for AI/ROCm projects:
+# the maintainer installs the ROCm build of torch (and torchvision) into the venv
+# directly -- URLs change under active ROCm development, so it is not managed by uv.
+# Everything else is uv-managed.
+dependencies = [
+    # web server
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.6",
+    # model code (pinned to the versions the vendored musubi_tuner was written for)
+    "transformers==4.57.6",
+    "safetensors==0.4.5",
+    "einops==0.7.0",
+    "accelerate==1.6.0",
+    "diffusers==0.32.1",
+    "huggingface-hub==0.34.3",
+    "pillow>=11.3.0",
+    "numpy",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx"]
+
+[tool.setuptools]
+packages = ["diffuse"]

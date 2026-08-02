@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Models / weights (downloaded, not committed)
+models/
+*.safetensors
+
+# Config with real paths (commit config.example.json instead)
+config.json
+
+# Misc
+.DS_Store
+.pytest_cache/
