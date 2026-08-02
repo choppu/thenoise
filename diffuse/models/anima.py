@@ -26,6 +26,7 @@ from typing import Optional
 
 import torch
 from PIL import Image
+from tqdm import tqdm
 
 from diffuse.dit.anima import utils as anima_utils
 from diffuse.dit.anima import sampling as anima_sampling
@@ -184,7 +185,7 @@ class AnimaModel:
         timesteps = (timesteps / 1000).to(dev, dtype=torch.bfloat16)
 
         do_cfg = guidance_scale != 1.0
-        for i, t in enumerate(timesteps):
+        for i, t in tqdm(enumerate(timesteps), total=len(timesteps), desc="sampling"):
             t_expand = t.expand(latents.shape[0])
             with torch.no_grad():
                 noise_pred = self.dit(latents, t_expand, cond_embed, padding_mask=padding_mask)
