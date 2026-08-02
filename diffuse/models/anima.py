@@ -1,8 +1,8 @@
 """Anima (Cosmos-Predict2 2B text2image) adapter.
 
 Loads the Anima DiT, Qwen3-0.6B text encoder + tokenizers, and Qwen-Image VAE once
-and reuses them across requests. Wraps the vendored ``sd_scripts`` modules (Phase 5
-moves this into the own implementation).
+and reuses them across requests. Uses the own implementation in ``diffuse.dit.anima``
+and the shared VAE in ``diffuse.vae``.
 
 Project decisions baked in here (same as Krea2):
   * bf16 only

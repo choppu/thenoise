@@ -7,7 +7,7 @@ Source: https://huggingface.co/circlestone-labs/Anima
   Text enc split_files/text_encoders/qwen_3_06b_base.safetensors
   VAE      split_files/vae/qwen_image_vae.safetensors
 
-The Qwen3 / T5 tokenizer configs are vendored under vendor/sd_scripts/configs/, so
+The Qwen3 / T5 tokenizer configs are packaged under ``diffuse/dit/anima/configs/``, so
 they are not downloaded.
 
 Usage:

@@ -32,4 +32,17 @@ dependencies = [
 dev = ["pytest", "httpx"]
 
 [tool.setuptools]
-packages = ["diffuse"]
+packages = [
+    "diffuse",
+    "diffuse.models",
+    "diffuse.dit",
+    "diffuse.dit.krea2",
+    "diffuse.dit.anima",
+    "diffuse.vae",
+    "diffuse.utils",
+    "diffuse.networks",
+]
+
+[tool.setuptools.package-data]
+# Tokenizer configs used by the Anima text encoder (loaded via __file__).
+"diffuse.dit.anima" = ["configs/**/*"]

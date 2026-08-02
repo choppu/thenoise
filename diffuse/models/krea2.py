@@ -1,8 +1,8 @@
 """Krea 2 (K2) adapter.
 
 Loads the MMDiT, Qwen-Image VAE and Qwen3-VL conditioner once and reuses them
-across requests. Wraps the vendored ``musubi_tuner.krea2`` modules (Phase 5 moves
-this into the own implementation).
+across requests. Uses the own implementation in ``diffuse.dit.krea2`` and the
+shared VAE in ``diffuse.vae``.
 
 Project decisions baked in here:
   * bf16 only (no fp8 / other formats)
