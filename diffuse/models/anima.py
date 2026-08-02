@@ -197,13 +197,11 @@ class AnimaModel:
 
     def _decode(self, latent: torch.Tensor) -> torch.Tensor:
         dev = torch.device(self.device)
-        self.vae.to(dev)
         with torch.no_grad():
             pixels = self.vae.decode_to_pixels(latent.to(dev, dtype=self.vae.dtype))
         if pixels.ndim == 5:  # [B, C, 1, H, W] -> [B, C, H, W]
             pixels = pixels.squeeze(2)
         pixels = pixels.to("cpu", dtype=torch.float32)
-        self.vae.to("cpu")
         return pixels[0]  # [C, H, W] in [-1, 1]
 
     @staticmethod

@@ -129,5 +129,4 @@ curl -s localhost:8000/text2image \
 - Validate outputs against known-good reference images (golden-image check) after the
   de-vendoring refactor
 - `torch.compile` per-block tuning and benchmarking on the APU
-- Keep the VAE/encoder resident on-device (Krea2's `sample()` shuttles the VAE)
 - Port the full `networks/` package to enable LoHa/LoKr LoRAs

@@ -84,7 +84,7 @@ class Krea2Model:
         )
 
         logger.info("Loading Krea 2 VAE from %s", vae_path)
-        self.ae = load_vae(vae_path, input_channels=3, device="cpu", disable_mmap=True)
+        self.ae = load_vae(vae_path, input_channels=3, device=device, disable_mmap=True)
         self.ae = self.ae.to(dtype).eval().requires_grad_(False)
 
         logger.info("Loading Krea 2 text encoder from %s", text_encoder_path)
