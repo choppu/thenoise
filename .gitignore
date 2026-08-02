@@ -8,7 +8,7 @@ dist/
 build/
 
 # Models / weights (downloaded, not committed)
-models/
+/models/
 *.safetensors
 
 # Config with real paths (commit config.example.json instead)
