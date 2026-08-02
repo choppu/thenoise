@@ -143,7 +143,7 @@ class AnimaModel:
         seed: int,
     ) -> torch.Tensor:
         dev = torch.device(self.device)
-        seed_g = torch.Generator(device="cpu").manual_seed(seed)
+        seed_g = torch.Generator(device=dev).manual_seed(seed)
 
         num_channels = self.dit.LATENT_CHANNELS
         shape = (1, num_channels, 1, height // _VAE_SCALE, width // _VAE_SCALE)

@@ -154,6 +154,14 @@ def load_anima_model(
     if unexpected:
         # Raise error to avoid silent failures
         raise RuntimeError(f"Unexpected keys in checkpoint: {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
+
+    # Move the whole model (including buffers not present in the checkpoint, e.g. the
+    # RoPE position-embedding buffers seq/dim_spatial_range/dim_temporal_range) onto the
+    # loading device. Under init_empty_weights() those buffers are created on meta, and
+    # load_state_dict(assign=True) only replaces keys present in the checkpoint, so they
+    # would otherwise stay off-device and break rotary attention on the GPU.
+    if loading_device.type != "cpu":
+        model.to(loading_device)
     logger.info(f"Loaded DiT model from {dit_path}, unexpected missing keys: {len(missing)}, unexpected keys: {len(unexpected)}")
 
     return model

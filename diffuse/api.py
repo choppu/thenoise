@@ -78,6 +78,7 @@ def create_app(registry) -> FastAPI:
                 num_images=req.num_images,
             )
         except Exception as e:  # surface generation errors cleanly
+            logger.exception("krea2 generation failed")
             raise HTTPException(500, f"generation failed: {e}") from e
         return {
             "model": "krea2",
@@ -103,6 +104,7 @@ def create_app(registry) -> FastAPI:
                 seed=req.seed,
             )
         except Exception as e:  # surface generation errors cleanly
+            logger.exception("anima generation failed")
             raise HTTPException(500, f"generation failed: {e}") from e
         return {
             "model": "anima",
