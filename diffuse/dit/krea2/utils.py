@@ -13,7 +13,7 @@ from diffuse.dit.krea2.encoder import (
 )
 from diffuse.dit.krea2.mmdit import SingleMMDiTConfig, SingleStreamDiT
 # fp8 dropped (bf16-only engine)
-from diffuse.utils.lora import load_safetensors_with_lora_and_fp8
+from diffuse.utils.lora import load_safetensors_with_lora
 from diffuse.utils.safetensors import load_safetensors
 
 logger = logging.getLogger(__name__)
@@ -63,11 +63,10 @@ def load_krea2_dit(
 
     if has_lora:
         # Merge LoRA into the base weights, then place the merged state dict on the model.
-        sd = load_safetensors_with_lora_and_fp8(
+        sd = load_safetensors_with_lora(
             model_files=dit_path,
             lora_weights_list=lora_weights,
             lora_multipliers=lora_multipliers,
-            fp8_optimization=False,
             calc_device=device,
             move_to_device=(loading_device == device),
             dit_weight_dtype=dtype,

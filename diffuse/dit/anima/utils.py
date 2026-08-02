@@ -8,7 +8,7 @@ from accelerate.utils import set_module_tensor_to_device  # kept for potential f
 from accelerate import init_empty_weights
 
 # fp8 dropped (bf16-only engine)
-from diffuse.utils.lora import load_safetensors_with_lora_and_fp8
+from diffuse.utils.lora import load_safetensors_with_lora
 from diffuse.dit.anima import models as anima_models
 from diffuse.utils.safetensors import WeightTransformHooks
 from diffuse.utils.setup_logging import setup_logging
@@ -100,11 +100,10 @@ def load_anima_model(
 
     rename_hooks = WeightTransformHooks(rename_hook=rename_hook)
 
-    sd = load_safetensors_with_lora_and_fp8(
+    sd = load_safetensors_with_lora(
         model_files=dit_path,
         lora_weights_list=lora_weights_list,
         lora_multipliers=lora_multipliers,
-        fp8_optimization=False,
         calc_device=device,
         move_to_device=(loading_device == device),
         dit_weight_dtype=dit_weight_dtype,
@@ -216,11 +215,10 @@ def load_qwen3_text_encoder(
             if lora_weights is None:
                 state_dict = load_file(qwen3_path, device="cpu")
             else:
-                state_dict = load_safetensors_with_lora_and_fp8(
+                state_dict = load_safetensors_with_lora(
                     model_files=qwen3_path,
                     lora_weights_list=lora_weights,
                     lora_multipliers=lora_multipliers,
-                    fp8_optimization=False,
                     calc_device=device,
                     move_to_device=True,
                     dit_weight_dtype=None,

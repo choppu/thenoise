@@ -13,7 +13,7 @@ small, explicit surface — not a full framework like ComfyUI.
 - BF16 inference only. No fp8 / other quant formats.
 - No video support.
 
-## Why PyTorch + vendored model code?
+## Why PyTorch + an own implementation?
 
 Diffusion DiTs are memory-bandwidth-bound, and Strix Halo's unified 128GB RAM is an
 ideal target (everything fits in shared memory, no paging). PyTorch on ROCm +
@@ -21,15 +21,10 @@ ideal target (everything fits in shared memory, no paging). PyTorch on ROCm +
 hand-written kernels. The "lightweight" part is the service surface, not the compute
 layer — so low-level HIP/MIOpen kernels are not justified.
 
-The model code is **vendored** (not installed as a dependency) so it can be optimized
-freely:
-
-- [`vendor/musubi_tuner/`](vendor/musubi_tuner/) — from
-  [kohya-ss/musubi-tuner](https://github.com/kohya-ss/musubi-tuner) (Krea2)
-- [`vendor/sd_scripts/`](vendor/sd_scripts/) — from
-  [kohya-ss/sd-scripts](https://github.com/kohya-ss/sd-scripts) (Anima)
-
-Both are pruned to the inference-only code paths for the models above.
+The model code is an **own implementation** (derived from musubi-tuner / sd-scripts)
+so it can be optimized freely. It is organized so that each model is independently
+optimizable, while genuinely-shared pieces (the Qwen-Image VAE, safetensors loader,
+LoRA merge, attention) are implemented once.
 
 ## Layout
 
@@ -38,11 +33,17 @@ diffuse/              server package (FastAPI app, config, runtime, adapters)
   runtime.py          single-model runtime (loads one model, swaps on reload)
   api.py              generic FastAPI /text2image surface
   cli.py + server.py  CLI entrypoints: serve / generate
-  krea2.py / anima.py model adapters (own defaults incl. advanced sampler params)
-vendor/musubi_tuner/  vendored, pruned model code (Krea2)  [to be removed]
-vendor/sd_scripts/    vendored, pruned model code (Anima)  [to be removed]
+  models/             model adapters (DiffusionModel ABC + catalog + detect)
+    base.py           detect/load/generate interface
+    krea2.py / anima.py
+  dit/                per-model compute (independently optimizable)
+    krea2/            Krea2 MMDiT + Qwen3-VL conditioner + sampler
+    anima/            Anima DiT + LLM Adapter + strategies + tokenizer configs
+  vae/                shared Qwen-Image VAE (single implementation)
+  utils/              shared infra: safetensors, lora, attention, device
+  networks/           LoRA network types (LoHa/LoKr marker)
 scripts/              download_krea2.py, download_anima.py
-tests/                config + runtime tests (no torch needed)
+tests/                config + runtime + detection tests (no torch needed)
 config.example.json   server knobs only (model paths come from the CLI)
 ```
 
@@ -110,35 +111,26 @@ curl -s localhost:8000/text2image \
                  open("/tmp/fox.png","wb").write(base64.b64decode(d["image"]))'
 ```
 
-## Vendoring notes
+## Codebase notes
 
-**musubi_tuner (Krea2):**
-- `qwen_image/qwen_image_utils.py` is pruned: the upstream imports `dataset/` and
-  `flux/` for control-image bucketing and fp8 detection; this engine is bf16 text2image
-  only, so those are replaced with a constant `is_fp8 = False`. The dead
-  `preprocess_control_image` helper references the removed names but is never called.
-- `modules/custom_offloading_utils.py` is a stub: block swap is unnecessary on 128GB
-  unified RAM.
-
-**sd_scripts (Anima):**
-- Imports rewritten from `library.` to the `sd_scripts.` namespace.
-- `anima_train_utils` is **not** vendored (it would drag in the whole training stack);
-  the VAE is loaded directly via `qwen_image_autoencoder_kl.load_vae`.
-- `strategy_base.py` / `strategy_anima.py` are pruned to the tokenize/encode strategies
-  (the caching strategies and their training deps are dropped).
-- `utils.py` is pruned to `setup_logging` (avoids cv2/torchvision/diffusers-scheduler
-  imports).
-- `lora_utils.py` has its `networks.loha`/`networks.lokr` imports made lazy (they
-  transitively pull in `sdxl_original_unet`). When LoRA support lands, vendor the
-  `networks/` package properly.
-- `custom_offloading_utils.py` is a stub (`ModelOffloader` / `BlockSwapConfig`); block
-  swap is unnecessary on 128GB unified RAM.
-- The `configs/qwen3_06b/` and `configs/t5_old/` tokenizer configs are vendored (the
-  text encoder's safetensors loading uses them).
+- **Shared, model-agnostic pieces are implemented once** (`diffuse/vae`, `diffuse/utils`):
+  the Qwen-Image VAE (same for both models), the safetensors loader (with `rename_hook`
+  for Anima), the LoRA merge, the attention backend (GQA-aware, serves both models),
+  and device helpers.
+- **Per-model compute lives in `diffuse/dit/{krea2,anima}`** so each can be tuned
+  independently (e.g. Krea2's GQA attention vs Anima's strategies).
+- **fp8 and block-swap are dropped** (bf16-only; 128GB unified RAM makes block swap
+  pointless). Their code paths, monkey-patches and offloader implementations are removed.
+- **LoRAs are kept**: standard LoRA (`lora_down`/`lora_up`) is merged at load time.
+  LoHa/LoKr need the full `networks/` package (not ported from upstream) and are
+  imported lazily — they raise if used.
+- The Anima tokenizer configs (`qwen3_06b`, `t5_old`) are packaged as data under
+  `diffuse/dit/anima/configs/` so the wheel is self-contained.
 
 ## Future work
 
-- LoRA loading (Krea2 supports it at load time; Anima needs the `networks/` package)
+- Validate outputs against known-good reference images (golden-image check) after the
+  de-vendoring refactor
 - `torch.compile` per-block tuning and benchmarking on the APU
 - Keep the VAE/encoder resident on-device (Krea2's `sample()` shuttles the VAE)
-- Validate outputs against known-good reference images
+- Port the full `networks/` package to enable LoHa/LoKr LoRAs

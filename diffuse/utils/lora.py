@@ -50,32 +50,26 @@ def filter_lora_state_dict(
     return weights_sd
 
 
-def load_safetensors_with_lora_and_fp8(
+def load_safetensors_with_lora(
     model_files: Union[str, List[str]],
     lora_weights_list: Optional[List[Dict[str, torch.Tensor]]],
     lora_multipliers: Optional[List[float]],
-    fp8_optimization: bool,
     calc_device: torch.device,
     move_to_device: bool = False,
     dit_weight_dtype: Optional[torch.dtype] = None,
-    target_keys: Optional[List[str]] = None,
-    exclude_keys: Optional[List[str]] = None,
     disable_numpy_memmap: bool = False,
     weight_transform_hooks: Optional[WeightTransformHooks] = None,
 ) -> dict[str, torch.Tensor]:
     """
-    Merge LoRA weights into the state dict of a model with fp8 optimization if needed.
+    Merge LoRA weights into the state dict of a model.
 
     Args:
         model_files (Union[str, List[str]]): Path to the model file or list of paths. If the path matches a pattern like `00001-of-00004`, it will load all files with the same prefix.
         lora_weights_list (Optional[List[Dict[str, torch.Tensor]]]): List of dictionaries of LoRA weight tensors to load.
         lora_multipliers (Optional[List[float]]): List of multipliers for LoRA weights.
-        fp8_optimization (bool): Whether to apply FP8 optimization.
         calc_device (torch.device): Device to calculate on.
         move_to_device (bool): Whether to move tensors to the calculation device after loading.
-        dit_weight_dtype (Optional[torch.dtype]): Dtype to load weights in when not using FP8 optimization.
-        target_keys (Optional[List[str]]): Keys to target for optimization.
-        exclude_keys (Optional[List[str]]): Keys to exclude from optimization.
+        dit_weight_dtype (Optional[torch.dtype]): Dtype to load weights in.
         disable_numpy_memmap (bool): Whether to disable numpy memmap when loading safetensors.
         weight_transform_hooks (Optional[WeightTransformHooks]): Hooks for transforming weights during loading.
     """
@@ -214,9 +208,8 @@ def load_safetensors_with_lora_and_fp8(
 
         weight_hook = weight_hook_func
 
-    state_dict = load_safetensors_with_fp8_optimization_and_hook(
+    state_dict = load_safetensors_with_lora_and_hook(
         model_files,
-        fp8_optimization,
         calc_device,
         move_to_device,
         dit_weight_dtype,
@@ -237,21 +230,17 @@ def load_safetensors_with_lora_and_fp8(
     return state_dict
 
 
-def load_safetensors_with_fp8_optimization_and_hook(
+def load_safetensors_with_lora_and_hook(
     model_files: list[str],
-    fp8_optimization: bool,
     calc_device: torch.device,
     move_to_device: bool = False,
     dit_weight_dtype: Optional[torch.dtype] = None,
-    target_keys: Optional[List[str]] = None,
-    exclude_keys: Optional[List[str]] = None,
     weight_hook: callable = None,
     disable_numpy_memmap: bool = False,
     weight_transform_hooks: Optional[WeightTransformHooks] = None,
 ) -> dict[str, torch.Tensor]:
     """
-    Load state dict from safetensors files and merge LoRA weights into the state dict.
-    fp8 is dropped (bf16-only engine), so this always takes the non-fp8 path.
+    Load state dict from safetensors files and apply the optional LoRA merge hook.
     """
     logger.info(
         f"Loading state dict without FP8 optimization. Dtype of weight: {dit_weight_dtype}, hook enabled: {weight_hook is not None}"
