@@ -12,7 +12,7 @@ models/
 *.safetensors
 
 # Config with real paths (commit config.example.json instead)
-config.json
+/config.json
 
 # Misc
 .DS_Store
