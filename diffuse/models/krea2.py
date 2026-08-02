@@ -27,9 +27,9 @@ import torch
 from PIL import Image
 from safetensors.torch import load_file
 
-from musubi_tuner.krea2 import krea2_utils
-from musubi_tuner.krea2.krea2_sampling import encode_prompts, sample
-from musubi_tuner.qwen_image.qwen_image_utils import load_vae
+from diffuse.dit.krea2 import utils as krea2_utils
+from diffuse.dit.krea2.sampling import encode_prompts, sample
+from diffuse.vae import load_vae
 
 logger = logging.getLogger(__name__)
 

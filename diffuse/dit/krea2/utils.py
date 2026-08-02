@@ -1,0 +1,117 @@
+"""Shared loaders / helpers for the Krea 2 (K2) integration."""
+
+import logging
+from typing import Optional, Union
+
+import torch
+
+from diffuse.dit.krea2.encoder import (
+    QWEN3_VL_4B_INSTRUCT_REPO_ID,
+    Qwen3VLConditioner,
+    TextEncoderConfig,
+    load_qwen3_vl_conditioner,
+)
+from diffuse.dit.krea2.mmdit import SingleMMDiTConfig, SingleStreamDiT
+# fp8 dropped (bf16-only engine)
+from diffuse.utils.lora import load_safetensors_with_lora_and_fp8
+from diffuse.utils.safetensors import load_safetensors
+
+logger = logging.getLogger(__name__)
+
+
+
+# The single config shipped with the OSS checkpoints (single_mmdit_large_wide).
+single_mmdit_large_wide = SingleMMDiTConfig(
+    features=6144,
+    tdim=256,
+    txtdim=2560,
+    heads=48,
+    kvheads=12,
+    multiplier=4,
+    layers=28,
+    patch=2,
+    channels=16,
+    txtheads=20,
+    txtkvheads=20,
+    txtlayers=12,
+)
+
+
+def load_krea2_dit(
+    dit_path: str,
+    device: Union[str, torch.device] = "cpu",
+    dtype: torch.dtype = torch.bfloat16,
+    config: SingleMMDiTConfig = single_mmdit_large_wide,
+    loading_device: Optional[Union[str, torch.device]] = None,
+    attn_mode: str = "torch",
+    split_attn: bool = False,
+    lora_weights: Optional[list] = None,
+    lora_multipliers: Optional[list] = None,
+) -> SingleStreamDiT:
+    """Build the K2 single-stream MMDiT on meta and load weights (assign=True).
+
+    bf16 only: fp8 is dropped. ``lora_weights`` (a list of loaded LoRA state dicts, with
+    optional ``lora_multipliers``) are merged into the base weights at load time.
+    """
+    device = torch.device(device)
+    loading_device = device if loading_device is None else torch.device(loading_device)
+    has_lora = lora_weights is not None and len(lora_weights) > 0
+
+    logger.info(f"Loading Krea 2 DiT weights from {dit_path}" + (f" (+{len(lora_weights)} LoRA merged)" if has_lora else ""))
+    with torch.device("meta"):
+        dit = SingleStreamDiT(config, attn_mode=attn_mode, split_attn=split_attn)
+
+    if has_lora:
+        # Merge LoRA into the base weights, then place the merged state dict on the model.
+        sd = load_safetensors_with_lora_and_fp8(
+            model_files=dit_path,
+            lora_weights_list=lora_weights,
+            lora_multipliers=lora_multipliers,
+            fp8_optimization=False,
+            calc_device=device,
+            move_to_device=(loading_device == device),
+            dit_weight_dtype=dtype,
+        )
+        if loading_device.type != "cpu":
+            for key in sd.keys():
+                sd[key] = sd[key].to(loading_device)
+        dit.load_state_dict(sd, strict=True, assign=True)
+    else:
+        # Load without mmap (disable_mmap=True) to avoid the official load_file's transient ~2x
+        # RAM (mmap page cache + materialized tensor), file locking, and lazy disk reads. Load
+        # directly to the target device+dtype (assign=True) so the loaded tensors become the params.
+        sd = load_safetensors(dit_path, device=loading_device, disable_mmap=True, dtype=dtype)
+        dit.load_state_dict(sd, strict=True, assign=True)
+
+    return dit
+
+
+def load_krea2_text_encoder(
+    path: str,
+    dtype: torch.dtype = torch.bfloat16,
+    device: Union[str, torch.device] = "cpu",
+    max_length: int = TextEncoderConfig.max_length,
+    select_layers: tuple = TextEncoderConfig.select_layers,
+    tokenizer_repo: str = QWEN3_VL_4B_INSTRUCT_REPO_ID,
+) -> Qwen3VLConditioner:
+    """Load the Qwen3-VL-4B conditioner used by K2: weights from ``path`` (local safetensors,
+    ComfyUI or official key layout), tokenizer from ``tokenizer_repo`` (Hub id or local dir)."""
+    return load_qwen3_vl_conditioner(
+        path,
+        dtype=dtype,
+        device=device,
+        max_length=max_length,
+        select_layers=select_layers,
+        tokenizer_repo=tokenizer_repo,
+    )
+
+
+@torch.no_grad()
+def get_krea2_prompt_embeds(encoder: Qwen3VLConditioner, prompts: list[str]) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return (hiddens, mask).
+
+    hiddens: (B, seq, num_select_layers, hidden) stacked selected hidden states.
+    mask:    (B, seq) bool attention mask (valid tokens incl. suffix, padding=False).
+    """
+    hiddens, mask = encoder(prompts)
+    return hiddens, mask.to(dtype=torch.bool)
