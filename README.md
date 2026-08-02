@@ -50,8 +50,8 @@ in `pyproject.toml`). Then:
 ```bash
 python -m venv .venv && source .venv/bin/activate
 uv pip install -e .            # installs deps, does NOT touch your ROCm torch
-python scripts/download_models.py --out ./models/krea2
-python scripts/download_anima.py --out ./models/anima
+python scripts/download_krea2.py --out ./models/krea2
+python scripts/download_anima.py --out ./models/anima --variant turbo-v1.0
 cp config.example.json config.json
 python -m diffuse.server -c config.json
 ```

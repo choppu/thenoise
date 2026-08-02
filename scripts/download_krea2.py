@@ -10,8 +10,8 @@ Uses huggingface_hub. Files (per the musubi-tuner krea2 doc):
 The Qwen3-VL tokenizer is fetched automatically (by repo id) at first text-encoder load.
 
 Usage:
-    python scripts/download_models.py --out ./models/krea2
-    python scripts/download_models.py --out ./models/krea2 --include-raw
+    python scripts/download_krea2.py --out ./models/krea2
+    python scripts/download_krea2.py --out ./models/krea2 --include-raw
 """
 from __future__ import annotations
 
