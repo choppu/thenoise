@@ -1,13 +1,17 @@
 """Krea 2 (K2) adapter.
 
-Loads the MMDiT, Qwen-Image VAE and Qwen3-VL conditioner once and reuses them across
-requests. Wraps the vendored ``musubi_tuner.krea2`` modules.
+Loads the MMDiT, Qwen-Image VAE and Qwen3-VL conditioner once and reuses them
+across requests. Wraps the vendored ``musubi_tuner.krea2`` modules (Phase 5 moves
+this into the own implementation).
 
 Project decisions baked in here:
   * bf16 only (no fp8 / other formats)
   * SDPA attention (``attn_mode="torch"``) -- no flash-attn needed on ROCm
   * no block swap (everything fits in 128GB unified RAM)
   * LoRA merging at load time via ``krea2_utils.load_krea2_dit(lora_weights=...)``
+
+The model class owns its defaults, including the "advanced" sampler parameters
+(``y1``, ``y2``, ``mu``), which are hard-coded and NOT exposed to the API/CLI.
 
 Inference is serialized with a lock: torch forward on a shared model is not
 thread-safe, so concurrent requests are queued per model.
@@ -17,7 +21,7 @@ from __future__ import annotations
 import logging
 import random
 import threading
-from typing import Optional, Sequence
+from typing import Optional
 
 import torch
 from PIL import Image
@@ -31,6 +35,15 @@ logger = logging.getLogger(__name__)
 
 
 class Krea2Model:
+    # Model-owned defaults (incl. advanced sampler params -- not exposed to API/CLI).
+    DEFAULT_STEPS = 8
+    DEFAULT_GUIDANCE_SCALE = 0.0
+    DEFAULT_WIDTH = 1024
+    DEFAULT_HEIGHT = 1024
+    DEFAULT_Y1 = 0.5
+    DEFAULT_Y2 = 1.15
+    DEFAULT_MU = None
+
     def __init__(
         self,
         *,
@@ -39,8 +52,8 @@ class Krea2Model:
         text_encoder_path: str,
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
-        lora_weights: Optional[Sequence[str]] = None,
-        lora_multipliers: Optional[Sequence[float]] = None,
+        lora_weights: Optional[list] = None,
+        lora_multipliers: Optional[list] = None,
     ):
         self.device = device
         self.dtype = dtype
@@ -76,24 +89,26 @@ class Krea2Model:
         *,
         prompt: str,
         negative_prompt: str = "",
-        width: int = 1024,
-        height: int = 1024,
-        steps: int = 8,
-        guidance_scale: float = 0.0,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        steps: Optional[int] = None,
+        guidance_scale: Optional[float] = None,
         seed: Optional[int] = None,
-        y1: float = 0.5,
-        y2: float = 1.15,
-        mu: Optional[float] = None,
-        num_images: int = 1,
-    ) -> list[Image.Image]:
-        """Encode -> denoise -> decode. Returns a list of PIL images (one per image)."""
-        with self._lock:
-            prompts = [prompt] * num_images
-            negatives = [negative_prompt] * num_images
-            cfg = guidance_scale > 1.0
+    ) -> Image.Image:
+        """Encode -> denoise -> decode. Returns a single PIL image."""
+        width = width or self.DEFAULT_WIDTH
+        height = height or self.DEFAULT_HEIGHT
+        steps = steps or self.DEFAULT_STEPS
+        guidance_scale = (
+            self.DEFAULT_GUIDANCE_SCALE
+            if guidance_scale is None
+            else guidance_scale
+        )
 
+        with self._lock:
+            cfg = guidance_scale > 1.0
             txt, txtmask, untxt, untxtmask = encode_prompts(
-                self.encoder, prompts, negatives, cfg=cfg
+                self.encoder, [prompt], [negative_prompt], cfg=cfg
             )
 
             if seed is None:
@@ -113,8 +128,8 @@ class Krea2Model:
                 steps=steps,
                 cfg_scale=guidance_scale,
                 seed=seed,
-                y1=y1,
-                y2=y2,
-                mu=mu,
+                y1=self.DEFAULT_Y1,
+                y2=self.DEFAULT_Y2,
+                mu=self.DEFAULT_MU,
             )
-            return images
+            return images[0]

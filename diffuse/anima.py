@@ -1,7 +1,8 @@
 """Anima (Cosmos-Predict2 2B text2image) adapter.
 
 Loads the Anima DiT, Qwen3-0.6B text encoder + tokenizers, and Qwen-Image VAE once
-and reuses them across requests. Wraps the vendored ``sd_scripts`` modules.
+and reuses them across requests. Wraps the vendored ``sd_scripts`` modules (Phase 5
+moves this into the own implementation).
 
 Project decisions baked in here (same as Krea2):
   * bf16 only
@@ -9,6 +10,9 @@ Project decisions baked in here (same as Krea2):
   * no block swap / fp8 (128GB unified RAM, bf16-only)
   * text encoding via the AnimaTokenizeStrategy / AnimaTextEncodingStrategy classes
     called directly (no global strategy registry needed for a single instance)
+
+The model class owns its defaults, including the "advanced" sampler parameter
+(``flow_shift``), which is hard-coded and NOT exposed to the API/CLI.
 
 Inference is serialized with a lock (torch forward on a shared model is not
 thread-safe).
@@ -18,7 +22,7 @@ from __future__ import annotations
 import logging
 import random
 import threading
-from typing import Optional, Sequence
+from typing import Optional
 
 import torch
 from PIL import Image
@@ -33,6 +37,13 @@ _VAE_SCALE = 8
 
 
 class AnimaModel:
+    # Model-owned defaults (incl. advanced sampler params -- not exposed to API/CLI).
+    DEFAULT_STEPS = 50
+    DEFAULT_GUIDANCE_SCALE = 3.5
+    DEFAULT_WIDTH = 1024
+    DEFAULT_HEIGHT = 1024
+    DEFAULT_FLOW_SHIFT = 5.0
+
     def __init__(
         self,
         *,
@@ -94,16 +105,24 @@ class AnimaModel:
         *,
         prompt: str,
         negative_prompt: str = "",
-        width: int = 1024,
-        height: int = 1024,
-        steps: int = 50,
-        guidance_scale: float = 3.5,
-        flow_shift: float = 5.0,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        steps: Optional[int] = None,
+        guidance_scale: Optional[float] = None,
         seed: Optional[int] = None,
-    ) -> list[Image.Image]:
-        """Encode -> denoise -> decode. Returns a list of PIL images."""
+    ) -> Image.Image:
+        """Encode -> denoise -> decode. Returns a single PIL image."""
+        width = width or self.DEFAULT_WIDTH
+        height = height or self.DEFAULT_HEIGHT
+        steps = steps or self.DEFAULT_STEPS
+        guidance_scale = (
+            self.DEFAULT_GUIDANCE_SCALE
+            if guidance_scale is None
+            else guidance_scale
+        )
         if height % 32 != 0 or width % 32 != 0:
             raise ValueError(f"height and width must be divisible by 32, got {height}x{width}")
+
         with self._lock:
             if seed is None:
                 seed = random.randint(0, 2**32 - 1)
@@ -111,9 +130,9 @@ class AnimaModel:
             cond_embed = self._encode_prompt(prompt)
             null_embed = self._encode_prompt(negative_prompt) if guidance_scale != 1.0 else cond_embed
 
-            latent = self._denoise(cond_embed, null_embed, guidance_scale, steps, flow_shift, height, width, seed)
+            latent = self._denoise(cond_embed, null_embed, guidance_scale, steps, height, width, seed)
             pixels = self._decode(latent)
-            return [self._to_pil(pixels)]
+            return self._to_pil(pixels)
 
     def _encode_prompt(self, prompt: str) -> torch.Tensor:
         """Tokenize -> Qwen3 encode -> LLM-adapter cross-attention embedding (bf16)."""
@@ -137,7 +156,6 @@ class AnimaModel:
         null_embed: torch.Tensor,
         guidance_scale: float,
         steps: int,
-        flow_shift: float,
         height: int,
         width: int,
         seed: int,
@@ -150,7 +168,7 @@ class AnimaModel:
         latents = torch.randn(shape, generator=seed_g, device=dev, dtype=torch.bfloat16)
         padding_mask = torch.zeros(1, 1, height // _VAE_SCALE, width // _VAE_SCALE, dtype=torch.bfloat16, device=dev)
 
-        timesteps, sigmas = hunyuan_image_utils.get_timesteps_sigmas(steps, flow_shift, dev)
+        timesteps, sigmas = hunyuan_image_utils.get_timesteps_sigmas(steps, self.DEFAULT_FLOW_SHIFT, dev)
         timesteps = (timesteps / 1000).to(dev, dtype=torch.bfloat16)
 
         do_cfg = guidance_scale != 1.0
