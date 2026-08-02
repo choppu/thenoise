@@ -8,11 +8,10 @@ from diffuse.utils.device import synchronize_device
 
 from diffuse.utils.safetensors import MemoryEfficientSafeOpen, TensorWeightAdapter, WeightTransformHooks, get_split_weight_filenames
 
-# NOTE (pruned for the focused engine): the upstream module imports
-# `networks.loha` / `networks.lokr` at module scope, which transitively pulls in
-# the whole sd-scripts LoRA/training stack (network_base -> sdxl_original_unet).
-# LoRA support comes later, so these are imported lazily inside the merge path
-# instead. When LoRA support lands, vendor the `networks/` package properly.
+# NOTE (pruned for the focused engine): upstream merged LoHa/LoKr LoRAs via the
+# `networks` package, which pulls in the whole sd-scripts LoRA/training stack. That
+# package is not vendored; only standard LoRA (lora_down/lora_up) is merged here, and
+# LoHa/LoKr raise NotImplementedError in the merge path.
 
 from diffuse.utils.setup_logging import setup_logging
 
@@ -191,16 +190,11 @@ def load_safetensors_with_lora(
                     hada_key = lora_name + ".hada_w1_a"
                     lokr_key = lora_name + ".lokr_w1"
 
-                    if hada_key in lora_weight_keys:
-                        # LoHa merge
-                        from diffuse.networks.loha import merge_weights_to_tensor as loha_merge  # lazy (LoRA support)
-                        model_weight = loha_merge(model_weight, lora_name, lora_sd, lora_weight_keys, multiplier, calc_device)
-                        break
-                    elif lokr_key in lora_weight_keys:
-                        # LoKr merge
-                        from diffuse.networks.lokr import merge_weights_to_tensor as lokr_merge  # lazy (LoRA support)
-                        model_weight = lokr_merge(model_weight, lora_name, lora_sd, lora_weight_keys, multiplier, calc_device)
-                        break
+                    if hada_key in lora_weight_keys or lokr_key in lora_weight_keys:
+                        raise NotImplementedError(
+                            "LoHa/LoKr LoRAs are not supported: the networks package "
+                            "was not vendored. Only standard LoRA (lora_down/lora_up) is merged."
+                        )
 
             if not keep_on_calc_device and original_device != calc_device:
                 model_weight = model_weight.to(original_device)  # move back to original device

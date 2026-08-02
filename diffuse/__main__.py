@@ -4,22 +4,12 @@ from __future__ import annotations
 from .cli import build_parser
 
 
-def _apply_overrides(settings, args) -> None:
-    for field in ("host", "port", "device", "dtype"):
-        v = getattr(args, field, None)
-        if v is not None:
-            setattr(settings, field, v)
-
-
 def _serve(args) -> None:
-    from .config import load_settings
-    settings = load_settings(args.config)
-    _apply_overrides(settings, args)
+    from .runtime import Settings, ModelPaths, Runtime
+    settings = Settings(device=args.device, host=args.host, port=args.port)
 
-    from .runtime import ModelPaths, Runtime
     runtime = Runtime(settings)
     runtime.load(
-        args.model,
         ModelPaths(
             dit_path=args.dit,
             vae_path=args.vae,

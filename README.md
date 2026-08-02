@@ -29,10 +29,10 @@ LoRA merge, attention) are implemented once.
 ## Layout
 
 ```
-diffuse/              server package (FastAPI app, config, runtime, adapters)
+diffuse/              server package (FastAPI app, runtime, adapters)
   runtime.py          single-model runtime (loads one model, swaps on reload)
   api.py              generic FastAPI /text2image surface
-  cli.py + server.py  CLI entrypoints: serve / generate
+  __main__.py + cli.py  CLI entrypoints: serve / generate (python -m diffuse)
   models/             model adapters (DiffusionModel ABC + catalog + detect)
     base.py           detect/load/generate interface
     krea2.py / anima.py
@@ -41,10 +41,8 @@ diffuse/              server package (FastAPI app, config, runtime, adapters)
     anima/            Anima DiT + LLM Adapter + strategies + tokenizer configs
   vae/                shared Qwen-Image VAE (single implementation)
   utils/              shared infra: safetensors, lora, attention, device
-  networks/           LoRA network types (LoHa/LoKr marker)
 scripts/              download_krea2.py, download_anima.py
-tests/                config + runtime + detection tests (no torch needed)
-config.example.json   server knobs only (model paths come from the CLI)
+tests/                cli + runtime + detection tests (no torch needed)
 ```
 
 ## Setup
@@ -59,25 +57,25 @@ python scripts/download_krea2.py --out ./models/krea2
 python scripts/download_anima.py --out ./models/anima --variant turbo-v1.0
 ```
 
-Model checkpoints are passed on the CLI, **not** read from config. `config.json` only
-holds server knobs (`host`, `port`, `device`, `dtype`).
+Everything is passed on the CLI — there is **no config file**. The model type is
+detected automatically from the `--dit` checkpoint, and inference is bf16-only.
 
 ## CLI
 
 Serve one model over HTTP:
 
 ```bash
-python -m diffuse.server serve --model krea2 \
+python -m diffuse serve \
   --dit ./models/krea2/diffusion_models/krea2_turbo_bf16.safetensors \
   --vae ./models/krea2/vae/qwen_image_vae.safetensors \
   --text-encoder ./models/krea2/text_encoders/qwen3vl_4b_bf16.safetensors \
-  -c config.json
+  --host 127.0.0.1 --port 8000
 ```
 
 Generate a single image without the server:
 
 ```bash
-python -m diffuse.server generate --model anima \
+python -m diffuse generate \
   --dit ./models/anima/split_files/diffusion_models/anima-turbo-v1.0.safetensors \
   --vae ./models/anima/split_files/vae/qwen_image_vae.safetensors \
   --text-encoder ./models/anima/split_files/text_encoders/qwen_3_06b_base.safetensors \
@@ -85,10 +83,9 @@ python -m diffuse.server generate --model anima \
 ```
 
 Only one model is loaded at a time (loading another swaps the resident one).
-`--model` is optional: when omitted, the model type is detected automatically from
-the `--dit` checkpoint (each model class owns a `detect()` routine that inspects the
-safetensors keys). If `--model` is given it is validated against the detected type.
-The text encoder and VAE are assumed to match the detected model.
+The model type is detected automatically from the `--dit` checkpoint (each model
+class owns a `detect()` routine that inspects the safetensors keys). The text
+encoder and VAE are assumed to match the detected model.
 
 ## API
 
@@ -122,8 +119,8 @@ curl -s localhost:8000/text2image \
 - **fp8 and block-swap are dropped** (bf16-only; 128GB unified RAM makes block swap
   pointless). Their code paths, monkey-patches and offloader implementations are removed.
 - **LoRAs are kept**: standard LoRA (`lora_down`/`lora_up`) is merged at load time.
-  LoHa/LoKr need the full `networks/` package (not ported from upstream) and are
-  imported lazily — they raise if used.
+  LoHa/LoKr are not supported (the upstream `networks/` package is not vendored) and
+  raise `NotImplementedError` in the merge path.
 - The Anima tokenizer configs (`qwen3_06b`, `t5_old`) are packaged as data under
   `diffuse/dit/anima/configs/` so the wheel is self-contained.
 

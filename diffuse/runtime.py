@@ -1,12 +1,11 @@
 """Single-model runtime: loads exactly one DiffusionModel at a time.
 
-Replaces the multi-model registry. The runtime is deliberately thin: it resolves the
-model class (either from the CLI's ``--model`` or by detecting the DiT type), holds
-the single resident instance, and swaps (unloads + GCs) on reload so only one set of
-weights is ever resident.
+The runtime is deliberately thin: it detects the model class from the DiT
+checkpoint, holds the single resident instance, and swaps (unloads + GCs) on
+reload so only one set of weights is ever resident.
 
-The text encoder and VAE are assumed to match the detected model; a wrong type throws
-during load and we fail anyway.
+The text encoder and VAE are assumed to match the detected model; a wrong type
+throws during load and we fail anyway.
 """
 from __future__ import annotations
 
@@ -19,8 +18,16 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class Settings:
+    """Runtime knobs, all passed on the CLI (bf16 is fixed for this engine)."""
+    device: str = "cuda"      # ROCm torch aliases cuda -> hip
+    host: str = "127.0.0.1"
+    port: int = 8000
+
+
+@dataclass
 class ModelPaths:
-    """Checkpoint paths supplied by the CLI (never read from config)."""
+    """Checkpoint paths supplied by the CLI."""
     dit_path: str
     vae_path: str
     text_encoder_path: str
@@ -38,33 +45,17 @@ class Runtime:
         self._model: Any = None
         self._model_name: Optional[str] = None
 
-    def load(self, model: Optional[str], paths: ModelPaths) -> None:
-        from .models import MODEL_CATALOG, resolve
+    def load(self, paths: ModelPaths) -> None:
+        from .models import resolve
 
-        if model:
-            name = model.strip().lower()
-            cls = next((c for c in MODEL_CATALOG if c.name == name), None)
-            if cls is None:
-                raise ValueError(
-                    f"unknown model '{model}' (choose from "
-                    f"{sorted(c.name for c in MODEL_CATALOG)})"
-                )
-            # Validate the explicit choice against the actual DiT type.
-            detected = resolve(paths.dit_path)
-            if detected.name != name:
-                raise ValueError(
-                    f"--model {name} does not match detected DiT type '{detected.name}'"
-                )
-        else:
-            cls = resolve(paths.dit_path)
-            name = cls.name
+        cls = resolve(paths.dit_path)
+        name = cls.name
 
         kwargs = dict(
             dit_path=paths.dit_path,
             vae_path=paths.vae_path,
             text_encoder_path=paths.text_encoder_path,
             device=self._settings.device,
-            dtype=self._settings.torch_dtype,
         )
         if name == "krea2":
             kwargs["lora_weights"] = paths.lora_weights or None

@@ -33,6 +33,7 @@ _KREA2_KEYS = [
     "x_embedder.linear.weight",
     "txtfusion.layerwise_blocks.0.attn.q_proj.weight",
     "blocks.0.mod.lin.weight",
+    "txtmlp.1.weight",
 ]
 
 

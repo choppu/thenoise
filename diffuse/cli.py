@@ -2,10 +2,11 @@
 
 Two subcommands share the same checkpoint flags:
   * ``serve``    run the FastAPI HTTP server with a single loaded model
-  * ``generate`` (Phase 4) run one generation and save the PNG
+  * ``generate`` run one generation and save the PNG
 
 Model checkpoints are supplied here (``--dit`` / ``--vae`` / ``--text-encoder``),
-never from config.
+and the model type is detected automatically from the ``--dit`` checkpoint.
+All options are passed on the command line (there is no config file).
 """
 from __future__ import annotations
 
@@ -31,22 +32,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     # serve
     serve = sub.add_parser("serve", help="run the FastAPI HTTP server")
-    serve.add_argument("-c", "--config", default=None,
-                       help="path to config.json (server knobs only)")
-    serve.add_argument("--model",
-                       choices=["krea2", "anima"],
-                       help="which model to load (default: detected from --dit)")
     _add_model_paths(serve)
-    serve.add_argument("--host", help="override config host")
-    serve.add_argument("--port", type=int, help="override config port")
-    serve.add_argument("--device", help="override config device (e.g. cuda)")
-    serve.add_argument("--dtype", help="override config dtype (bf16 only)")
+    serve.add_argument("--host", default="127.0.0.1",
+                       help="bind host (default: 127.0.0.1)")
+    serve.add_argument("--port", type=int, default=8000,
+                       help="bind port (default: 8000)")
+    serve.add_argument("--device", default="cuda",
+                       help="inference device; ROCm aliases cuda -> hip (default: cuda)")
 
-    # generate (implemented in Phase 4)
+    # generate
     gen = sub.add_parser("generate", help="run one generation and save a PNG")
-    gen.add_argument("--model",
-                     choices=["krea2", "anima"],
-                     help="which model to load (default: detected from --dit)")
     _add_model_paths(gen)
     gen.add_argument("--prompt", required=True)
     gen.add_argument("--negative-prompt", default="")
@@ -56,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--guidance-scale", type=float)
     gen.add_argument("--seed", type=int)
     gen.add_argument("--out", default="out.png")
-    gen.add_argument("--device", default="cuda")
-    gen.add_argument("--dtype", default="bfloat16")
+    gen.add_argument("--device", default="cuda",
+                     help="inference device; ROCm aliases cuda -> hip (default: cuda)")
 
     return parser

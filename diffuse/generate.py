@@ -14,13 +14,11 @@ logger = logging.getLogger(__name__)
 
 
 def run_generate(args) -> None:
-    from .config import Settings
-    settings = Settings(device=args.device, dtype=args.dtype)
+    from .runtime import Settings, ModelPaths, Runtime
+    settings = Settings(device=args.device)
 
-    from .runtime import ModelPaths, Runtime
     runtime = Runtime(settings)
     runtime.load(
-        args.model,
         ModelPaths(
             dit_path=args.dit,
             vae_path=args.vae,

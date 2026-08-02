@@ -40,7 +40,6 @@ packages = [
     "diffuse.dit.anima",
     "diffuse.vae",
     "diffuse.utils",
-    "diffuse.networks",
 ]
 
 [tool.setuptools.package-data]

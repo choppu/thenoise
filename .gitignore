@@ -11,9 +11,6 @@ build/
 /models/
 *.safetensors
 
-# Config with real paths (commit config.example.json instead)
-/config.json
-
 # Misc
 .DS_Store
 .pytest_cache/
