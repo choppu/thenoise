@@ -219,7 +219,7 @@ def sample(
     ae = ae.to(img.device)
     pixels = ae.decode_to_pixels(img.to(torch.bfloat16))
     ae = ae.to("cpu")
-    pixels = rearrange(pixels * 255.0, "b c h w -> b h w c").cpu().byte().numpy()
+    pixels = rearrange(pixels.squeeze(2) * 255.0, "b c h w -> b h w c").cpu().byte().numpy()
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
