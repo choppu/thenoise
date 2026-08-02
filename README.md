@@ -68,8 +68,8 @@ Serve one model over HTTP:
 
 ```bash
 python -m diffuse.server serve --model krea2 \
-  --dit ./models/krea2/turbo.safetensors \
-  --vae ./models/krea2/split_files/vae/qwen_image_vae.safetensors \
+  --dit ./models/krea2/diffusion_models/krea2_turbo_bf16.safetensors \
+  --vae ./models/krea2/vae/qwen_image_vae.safetensors \
   --text-encoder ./models/krea2/text_encoders/qwen3vl_4b_bf16.safetensors \
   -c config.json
 ```

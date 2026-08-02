@@ -1,13 +1,15 @@
 """Download the Krea 2 model artifacts into a local directory.
 
-Uses huggingface_hub. Files (per the musubi-tuner krea2 doc):
+Uses huggingface_hub. All files come from `Comfy-Org/Krea-2`, which needs no
+authentication. We only fetch the bf16 variants:
 
-  DiT (Turbo)     krea/Krea-2-Turbo/turbo.safetensors
-  DiT (RAW, opt.) krea/Krea-2-Raw/raw.safetensors
-  VAE             Comfy-Org/Qwen-Image_ComfyUI/split_files/vae/qwen_image_vae.safetensors
-  Text encoder    Comfy-Org/Qwen3-VL/text_encoders/qwen3vl_4b_bf16.safetensors
+  DiT (Turbo)  diffusion_models/krea2_turbo_bf16.safetensors
+  DiT (RAW)    diffusion_models/krea2_raw_bf16.safetensors   (--include-raw)
+  VAE          vae/qwen_image_vae.safetensors
+  Text encoder text_encoders/qwen3vl_4b_bf16.safetensors
 
-The Qwen3-VL tokenizer is fetched automatically (by repo id) at first text-encoder load.
+The Qwen3-VL tokenizer is fetched automatically (by repo id) at first
+text-encoder load.
 
 Usage:
     python scripts/download_krea2.py --out ./models/krea2
@@ -20,16 +22,18 @@ from pathlib import Path
 
 from huggingface_hub import hf_hub_download
 
+REPO = "Comfy-Org/Krea-2"
+
 ARTIFACTS = {
-    "dit_turbo": ("krea/Krea-2-Turbo", "turbo.safetensors"),
-    "vae": ("Comfy-Org/Qwen-Image_ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
-    "text_encoder": ("Comfy-Org/Qwen3-VL", "text_encoders/qwen3vl_4b_bf16.safetensors"),
-    "dit_raw": ("krea/Krea-2-Raw", "raw.safetensors"),
+    "dit_turbo": "diffusion_models/krea2_turbo_bf16.safetensors",
+    "vae": "vae/qwen_image_vae.safetensors",
+    "text_encoder": "text_encoders/qwen3vl_4b_bf16.safetensors",
+    "dit_raw": "diffusion_models/krea2_raw_bf16.safetensors",
 }
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Download Krea 2 model artifacts")
+    ap = argparse.ArgumentParser(description="Download Krea 2 model artifacts (bf16)")
     ap.add_argument("--out", default="./models/krea2", help="output directory")
     ap.add_argument("--include-raw", action="store_true", help="also download the RAW DiT")
     args = ap.parse_args()
@@ -41,8 +45,8 @@ def main() -> None:
     if not args.include_raw:
         items = [i for i in items if i[0] != "dit_raw"]
 
-    for name, (repo, path) in items:
-        dest = hf_hub_download(repo, path, local_dir=str(out))
+    for name, path in items:
+        dest = hf_hub_download(REPO, path, local_dir=str(out))
         print(f"{name:14s} -> {dest}")
 
 

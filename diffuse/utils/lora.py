@@ -213,8 +213,6 @@ def load_safetensors_with_lora(
         calc_device,
         move_to_device,
         dit_weight_dtype,
-        target_keys,
-        exclude_keys,
         weight_hook=weight_hook,
         disable_numpy_memmap=disable_numpy_memmap,
         weight_transform_hooks=weight_transform_hooks,
@@ -243,7 +241,7 @@ def load_safetensors_with_lora_and_hook(
     Load state dict from safetensors files and apply the optional LoRA merge hook.
     """
     logger.info(
-        f"Loading state dict without FP8 optimization. Dtype of weight: {dit_weight_dtype}, hook enabled: {weight_hook is not None}"
+        f"Loading state dict. Dtype of weight: {dit_weight_dtype}, hook enabled: {weight_hook is not None}"
     )
     state_dict = {}
     for model_file in model_files:

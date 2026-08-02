@@ -28,7 +28,7 @@ import torch
 from PIL import Image
 
 from diffuse.dit.anima import utils as anima_utils
-from diffuse.dit.anima import hunyuan as hunyuan_image_utils
+from diffuse.dit.anima import sampling as anima_sampling
 from diffuse.dit.anima.strategy import AnimaTextEncodingStrategy, AnimaTokenizeStrategy
 from diffuse.vae import load_vae
 
@@ -180,7 +180,7 @@ class AnimaModel:
         latents = torch.randn(shape, generator=seed_g, device=dev, dtype=torch.bfloat16)
         padding_mask = torch.zeros(1, 1, height // _VAE_SCALE, width // _VAE_SCALE, dtype=torch.bfloat16, device=dev)
 
-        timesteps, sigmas = hunyuan_image_utils.get_timesteps_sigmas(steps, self.DEFAULT_FLOW_SHIFT, dev)
+        timesteps, sigmas = anima_sampling.get_timesteps_sigmas(steps, self.DEFAULT_FLOW_SHIFT, dev)
         timesteps = (timesteps / 1000).to(dev, dtype=torch.bfloat16)
 
         do_cfg = guidance_scale != 1.0
@@ -191,7 +191,7 @@ class AnimaModel:
                 if do_cfg:
                     uncond = self.dit(latents, t_expand, null_embed, padding_mask=padding_mask)
                     noise_pred = uncond + guidance_scale * (noise_pred - uncond)
-            latents = hunyuan_image_utils.step(latents, noise_pred, sigmas, i).to(latents.dtype)
+            latents = anima_sampling.step(latents, noise_pred, sigmas, i).to(latents.dtype)
         return latents
 
     def _decode(self, latent: torch.Tensor) -> torch.Tensor:
