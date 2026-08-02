@@ -212,14 +212,16 @@ def sample(
         h=height // (compression * patch),
         w=width // (compression * patch),
     )
-    # decode_to_pixels denormalizes (*std + mean), decodes, drops the frame axis, returns [0, 1].
+    # decode_to_pixels denormalizes (*std + mean), decodes, drops the frame axis, returns
+    # pixels in [-1, 1] (the shared sd-scripts Qwen-Image VAE clamps to [-1, 1], not [0, 1]),
+    # so scale to [0, 1] before converting to bytes.
     # Move the VAE to the latent's device for decode (it is kept on CPU otherwise to save VRAM),
     # then move it back to CPU so the next generation starts with the decode VRAM freed. The DiT
     # stays put on its device; the decode is expected to fit alongside it via fp8 / block swap.
     ae = ae.to(img.device)
     pixels = ae.decode_to_pixels(img.to(torch.bfloat16))
     ae = ae.to("cpu")
-    pixels = rearrange(pixels.squeeze(2) * 255.0, "b c h w -> b h w c").cpu().byte().numpy()
+    pixels = rearrange((pixels.squeeze(2) + 1.0) / 2.0 * 255.0, "b c h w -> b h w c").cpu().byte().numpy()
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
