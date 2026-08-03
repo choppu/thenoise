@@ -98,6 +98,7 @@ class Krea2Model(DiffusionModel):
             lora_weights=lora_sds or None,
             lora_multipliers=mults or None,
         )
+        self.dit.eval().requires_grad_(False)
 
         logger.info("Loading Krea 2 text encoder from %s", text_encoder_path)
         self.encoder = krea2_utils.load_krea2_text_encoder(

@@ -223,11 +223,12 @@ class DiffusionModel(ABC):
             if seed is None:
                 seed = random.randint(0, 2**32 - 1)
 
-            cond = self.encode_prompt(prompt, negative_prompt, guidance_scale=guidance_scale)
-            latents = self._denoise(cond, steps, height, width, seed, guidance_scale)
-            pixels = self.decode(latents)                 # fp32 GPU tensor [C,H,W]
-            pixels = self.postprocess(pixels)             # tensor filters (hook)
-            return self._to_pil(pixels)                   # final uint8 -> PIL
+            with torch.no_grad():
+                cond = self.encode_prompt(prompt, negative_prompt, guidance_scale=guidance_scale)
+                latents = self._denoise(cond, steps, height, width, seed, guidance_scale)
+                pixels = self.decode(latents)                 # fp32 GPU tensor [C,H,W]
+                pixels = self.postprocess(pixels)             # tensor filters (hook)
+                return self._to_pil(pixels)                   # final uint8 -> PIL
 
     def _denoise(
         self,
