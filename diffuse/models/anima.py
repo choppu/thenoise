@@ -53,9 +53,15 @@ class AnimaModel(DiffusionModel):
     def detect(f) -> bool:
         """True if this handle is the Anima DiT.
 
-        Anima DiTs expose keys under the ``model.diffusion_model.`` prefix.
+        Anima DiTs expose keys under the ``net.`` prefix (anima-base-v1.0 and
+        earlier) or ``model.diffusion_model.`` prefix (anima-turbo-v1.0 and
+        later). Both are recognized here; the loader strips whichever prefix is
+        present.
         """
-        return any(k.startswith("model.diffusion_model.") for k in f.keys())
+        keys = f.keys()
+        return any(k.startswith("net.") for k in keys) or any(
+            k.startswith("model.diffusion_model.") for k in keys
+        )
 
     def __init__(
         self,
