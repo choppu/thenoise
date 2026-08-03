@@ -41,6 +41,7 @@ packages = [
     "diffuse.vae",
     "diffuse.upscale",
     "diffuse.utils",
+    "diffuse.postprocess",
 ]
 
 [tool.setuptools.package-data]

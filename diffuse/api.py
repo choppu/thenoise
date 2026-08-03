@@ -35,6 +35,7 @@ class Text2ImageRequest(BaseModel):
     seed: Optional[int] = None
     upscale: bool = False
     sampler: Optional[str] = None
+    qwen_vae_enhance: bool = False
 
 
 def _to_base64_png(image: Image.Image) -> str:
@@ -67,6 +68,7 @@ def create_app(runtime) -> FastAPI:
                 seed=req.seed,
                 upscale=req.upscale,
                 sampler=req.sampler,
+                qwen_vae_enhance=req.qwen_vae_enhance,
             )
         except Exception as e:  # surface generation errors cleanly
             logger.exception("generation failed")

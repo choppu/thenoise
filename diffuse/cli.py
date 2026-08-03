@@ -56,6 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
                           "run a low-strength refine denoise before decoding")
     gen.add_argument("--sampler", choices=["euler", "er_sde"], default=None,
                      help="denoising solver (default: er_sde)")
+    gen.add_argument("--qwen-vae-enhance", action="store_true",
+                     help="apply the Nyquist Notch post filter to decoded pixels "
+                          "(removes 2px grid artifacts)")
     gen.add_argument("--device", default="cuda",
                      help="inference device; ROCm aliases cuda -> hip (default: cuda)")
 

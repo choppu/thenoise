@@ -49,6 +49,7 @@ from tqdm import tqdm
 
 from diffuse.upscale import load_upscaler
 from diffuse.vae import load_vae
+from diffuse.postprocess.nyquist import nyquist_notch
 
 
 @dataclass
@@ -241,6 +242,7 @@ class DiffusionModel(ABC):
         seed: Optional[int] = None,
         upscale: bool = False,
         sampler: Optional[str] = None,
+        qwen_vae_enhance: bool = False,
     ) -> Image.Image:
         """Encode -> denoise -> decode -> postprocess. Returns a single PIL image.
 
@@ -248,6 +250,8 @@ class DiffusionModel(ABC):
         space (SesquiLSR) after the main denoise loop and given a short
         low-strength refine denoise before decoding, doubling the output size.
         ``sampler`` selects the denoising solver (default ``self.SAMPLER``).
+        ``qwen_vae_enhance`` applies the Nyquist Notch post filter to the decoded
+        pixels to remove 2px grid artifacts.
         """
         width = width or self.DEFAULT_WIDTH
         height = height or self.DEFAULT_HEIGHT
@@ -271,7 +275,9 @@ class DiffusionModel(ABC):
                         latents, cond, steps, height, width, seed, guidance_scale
                     )
                 pixels = self.decode(latents)                 # fp32 GPU tensor [C,H,W]
-                pixels = self.postprocess(pixels)             # tensor filters (hook)
+                pixels = self.postprocess(
+                    pixels, qwen_vae_enhance=qwen_vae_enhance
+                )  # tensor filters (hook)
                 return self._to_pil(pixels)                   # final uint8 -> PIL
 
     def _denoise(
@@ -514,12 +520,24 @@ class DiffusionModel(ABC):
         pixels = pixels.to(torch.float32)
         return pixels[0]  # [C, H, W] in [-1, 1]
 
-    def postprocess(self, pixels: torch.Tensor) -> torch.Tensor:
+    def postprocess(
+        self,
+        pixels: torch.Tensor,
+        *,
+        qwen_vae_enhance: bool = False,
+    ) -> torch.Tensor:
         """Tensor post-processing hook. Runs on the fp32 GPU pixels.
 
         Override or compose (e.g. color grading, sharpening, upscaling). Metadata
         that must live on the final PNG is added after ``_to_pil`` instead.
+
+        With ``qwen_vae_enhance``, applies the Nyquist Notch filter (see
+        ``diffuse.postprocess.nyquist``) to strip 2px grid artifacts from the
+        decoded pixels. The filter is implemented in its own module; this hook
+        only dispatches to it.
         """
+        if qwen_vae_enhance:
+            pixels = nyquist_notch(pixels)
         return pixels
 
     @staticmethod

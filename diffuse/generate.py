@@ -39,6 +39,7 @@ def run_generate(args) -> None:
         seed=seed,
         upscale=args.upscale,
         sampler=args.sampler,
+        qwen_vae_enhance=args.qwen_vae_enhance,
     )
 
     image.save(args.out)
