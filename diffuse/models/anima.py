@@ -202,3 +202,16 @@ class AnimaModel(DiffusionModel):
         if height % 32 != 0 or width % 32 != 0:
             raise ValueError(f"height and width must be divisible by 32, got {height}x{width}")
         return width, height
+
+    def percent_to_sigma(self, percent: float) -> float:
+        """Percent -> sigma (ComfyUI ModelSamplingDiscreteFlow, shift=3.0).
+
+        Used by the ER-SDE solver to nudge the first sigma just below 1.
+        """
+        if percent <= 0.0:
+            return 1.0
+        if percent >= 1.0:
+            return 0.0
+        t = 1.0 - percent
+        shift = self.DEFAULT_FLOW_SHIFT
+        return (shift * t) / (1.0 + (shift - 1.0) * t)

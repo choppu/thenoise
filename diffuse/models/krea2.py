@@ -27,6 +27,7 @@ thread-safe, so concurrent requests are queued per model.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Optional
 
 import torch
@@ -225,3 +226,16 @@ class Krea2Model(DiffusionModel):
         # must be multiples of compression * patch. Pad up otherwise.
         align = self._compression * self.dit.config.patch
         return roundup(width, align, "width"), roundup(height, align, "height")
+
+    def percent_to_sigma(self, percent: float) -> float:
+        """Percent -> sigma (ComfyUI ModelSamplingFlux, shift=mu=1.15).
+
+        Used by the ER-SDE solver to nudge the first sigma just below 1.
+        """
+        if percent <= 0.0:
+            return 1.0
+        if percent >= 1.0:
+            return 0.0
+        t = 1.0 - percent
+        mu = self.DEFAULT_MU
+        return math.exp(mu) / (math.exp(mu) + (1.0 / t - 1.0))

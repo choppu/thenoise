@@ -34,6 +34,7 @@ class Text2ImageRequest(BaseModel):
     guidance_scale: Optional[float] = None
     seed: Optional[int] = None
     upscale: bool = False
+    sampler: Optional[str] = None
 
 
 def _to_base64_png(image: Image.Image) -> str:
@@ -65,6 +66,7 @@ def create_app(runtime) -> FastAPI:
                 guidance_scale=req.guidance_scale,
                 seed=req.seed,
                 upscale=req.upscale,
+                sampler=req.sampler,
             )
         except Exception as e:  # surface generation errors cleanly
             logger.exception("generation failed")

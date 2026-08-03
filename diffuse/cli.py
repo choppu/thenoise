@@ -54,6 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--upscale", action="store_true",
                      help="upscale the latent 2x in latent space (SesquiLSR) and "
                           "run a low-strength refine denoise before decoding")
+    gen.add_argument("--sampler", choices=["euler", "er_sde"], default=None,
+                     help="denoising solver (default: er_sde)")
     gen.add_argument("--device", default="cuda",
                      help="inference device; ROCm aliases cuda -> hip (default: cuda)")
 
