@@ -11,6 +11,9 @@ build/
 /models/
 *.safetensors
 
+# Vendored Sesqui upscaler weights ARE committed (bf16, ~6MB).
+!diffuse/upscale/weights/*.safetensors
+
 # Misc
 .DS_Store
 .pytest_cache/

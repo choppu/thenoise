@@ -39,9 +39,12 @@ packages = [
     "diffuse.dit.krea2",
     "diffuse.dit.anima",
     "diffuse.vae",
+    "diffuse.upscale",
     "diffuse.utils",
 ]
 
 [tool.setuptools.package-data]
 # Tokenizer configs used by the Anima text encoder (loaded via __file__).
 "diffuse.dit.anima" = ["configs/**/*"]
+# Committed Sesqui latent upscaler weights (bf16, ~6MB).
+"diffuse.upscale" = ["weights/**/*"]

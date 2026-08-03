@@ -37,6 +37,7 @@ def run_generate(args) -> None:
         steps=args.steps,
         guidance_scale=args.guidance_scale,
         seed=seed,
+        upscale=args.upscale,
     )
 
     image.save(args.out)

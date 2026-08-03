@@ -47,6 +47,7 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
+from diffuse.upscale import load_upscaler
 from diffuse.vae import load_vae
 
 
@@ -92,6 +93,15 @@ class DiffusionModel(ABC):
     LATENT_CHANNELS = 16
     _VAE_SCALE = 8
 
+    # Optional latent upscaling + refine (SesquiLSR). ``REFINE_STRENGTH`` is the
+    # low-strength final denoise on the upscaled latent (the ``denoise=0.1``
+    # second KSampler pass in ComfyUI); ``REFINE_STEPS_FRACTION`` is the share of
+    # the full schedule run for that refinement. Both are model-agnostic and
+    # hard-coded here, like the other advanced sampler params.
+    UPSCALE_SCALE = 2
+    REFINE_STRENGTH = 0.1
+    REFINE_STEPS_FRACTION = 0.1
+
     @staticmethod
     @abstractmethod
     def detect(f) -> bool:
@@ -121,6 +131,10 @@ class DiffusionModel(ABC):
         self.lora_weights = lora_weights
         self.lora_multipliers = lora_multipliers
         self._lock = threading.Lock()
+
+        # Lazy Sesqui latent upscaler (only loaded if ``upscale`` is requested).
+        self._upscaler = None
+        self._adaptor = None
 
         # Shared Qwen-Image VAE. Single-frame decode, so caching is disabled.
         self.vae = self._load_vae(vae_path)
@@ -207,8 +221,14 @@ class DiffusionModel(ABC):
         steps: Optional[int] = None,
         guidance_scale: Optional[float] = None,
         seed: Optional[int] = None,
+        upscale: bool = False,
     ) -> Image.Image:
-        """Encode -> denoise -> decode -> postprocess. Returns a single PIL image."""
+        """Encode -> denoise -> decode -> postprocess. Returns a single PIL image.
+
+        With ``upscale=True``, the canonical latent is upscaled 2x in latent
+        space (SesquiLSR) after the main denoise loop and given a short
+        low-strength refine denoise before decoding, doubling the output size.
+        """
         width = width or self.DEFAULT_WIDTH
         height = height or self.DEFAULT_HEIGHT
         steps = steps or self.DEFAULT_STEPS
@@ -226,6 +246,10 @@ class DiffusionModel(ABC):
             with torch.no_grad():
                 cond = self.encode_prompt(prompt, negative_prompt, guidance_scale=guidance_scale)
                 latents = self._denoise(cond, steps, height, width, seed, guidance_scale)
+                if upscale:
+                    latents = self._upscale_and_refine(
+                        latents, cond, steps, height, width, seed, guidance_scale
+                    )
                 pixels = self.decode(latents)                 # fp32 GPU tensor [C,H,W]
                 pixels = self.postprocess(pixels)             # tensor filters (hook)
                 return self._to_pil(pixels)                   # final uint8 -> PIL
@@ -252,6 +276,91 @@ class DiffusionModel(ABC):
         for i, step in tqdm(enumerate(schedule), total=len(schedule), desc="sampling"):
             v = self.denoise_step(x, step.t, cond, guidance_scale, i)
             x = x.float() - step.delta * v.float()
+            x = x.to(dtype)
+        return self.finalize_latent(x, height, width)
+
+    # ------------------------------------------------------------- upscaling
+    def _load_upscaler(self):
+        """Load the Sesqui latent upscaler (once, lazily, under the lock)."""
+        if self._upscaler is None:
+            self._upscaler, self._adaptor = load_upscaler(
+                device=self.device, dtype=self.dtype
+            )
+        return self._upscaler, self._adaptor
+
+    def _upscale_and_refine(
+        self,
+        latents: torch.Tensor,
+        cond: Conditioning,
+        steps: int,
+        height: int,
+        width: int,
+        seed: int,
+        guidance_scale: float,
+    ) -> torch.Tensor:
+        """Upscale the canonical latent ``UPSCALE_SCALE``x in latent space, then
+        run a short low-strength refine denoise at the new size.
+
+        Sesqui operates on raw VAE latents; the Wan21 adaptor converts the
+        canonical (z-score) latent to/from that space. The refined result is the
+        canonical latent at the upscaled spatial size, ready for ``decode``.
+        """
+        upscaler, adaptor = self._load_upscaler()
+        scale = self.UPSCALE_SCALE
+        z = latents.to(device=self.device, dtype=self.dtype)
+
+        with torch.no_grad():
+            # Adaptor math in fp32; the model runs in bf16.
+            raw = adaptor.to_vae_latent(z).to(self.dtype)
+            h, w = z.shape[-2:]
+            raw_up = upscaler(raw, (scale * h, scale * w))
+            z_up = adaptor.from_vae_latent(raw_up.float()).to(self.dtype)
+
+        # One short low-strength refine denoise at the upscaled size.
+        return self._refine(
+            z_up, cond, steps, scale * height, scale * width, seed, guidance_scale
+        )
+
+    def _refine(
+        self,
+        z: torch.Tensor,
+        cond: Conditioning,
+        steps: int,
+        height: int,
+        width: int,
+        seed: int,
+        guidance_scale: float,
+    ) -> torch.Tensor:
+        """Short low-strength refine denoise on an already-clean latent.
+
+        Mirrors the ``denoise=0.1`` second KSampler pass in ComfyUI: a small
+        amount of noise is added to the clean upscaled latent, then the last
+        ``REFINE_STEPS_FRACTION`` of the schedule is run with its timesteps
+        rescaled to span ``[REFINE_STRENGTH, 0]``. Rescaling keeps the noise
+        level equal to the total Euler delta applied, so the update is
+        self-consistent: ``x <- x - delta*v`` removes exactly the added noise.
+        """
+        strength = self.REFINE_STRENGTH
+
+        full = self.schedule(steps, height, width)
+        refine_steps = max(2, round(self.REFINE_STEPS_FRACTION * len(full)))
+        k = max(0, len(full) - refine_steps)
+        sub = full[k:]
+        t_first = float(sub[0].t)
+        scale = strength / t_first if t_first > 0 else 0.0
+
+        # Add a small amount of noise (seeded) to the clean upscaled latent.
+        generator = torch.Generator(device=self.device).manual_seed(seed)
+        noise = torch.randn_like(z, generator=generator)
+        noised = z + strength * noise
+
+        x = self.prepare_latent(noised, cond, steps, height, width)
+        dtype = x.dtype
+        for i, step in enumerate(sub):
+            t = step.t * scale
+            delta = step.delta * scale
+            v = self.denoise_step(x, t, cond, guidance_scale, i)
+            x = x.float() - delta * v.float()
             x = x.to(dtype)
         return self.finalize_latent(x, height, width)
 

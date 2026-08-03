@@ -51,6 +51,9 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--guidance-scale", type=float)
     gen.add_argument("--seed", type=int)
     gen.add_argument("--out", default="out.png")
+    gen.add_argument("--upscale", action="store_true",
+                     help="upscale the latent 2x in latent space (SesquiLSR) and "
+                          "run a low-strength refine denoise before decoding")
     gen.add_argument("--device", default="cuda",
                      help="inference device; ROCm aliases cuda -> hip (default: cuda)")
 
