@@ -93,14 +93,12 @@ class DiffusionModel(ABC):
     LATENT_CHANNELS = 16
     _VAE_SCALE = 8
 
-    # Optional latent upscaling + refine (SesquiLSR). ``REFINE_STRENGTH`` is the
-    # low-strength final denoise on the upscaled latent (the ``denoise=0.1``
-    # second KSampler pass in ComfyUI); ``REFINE_STEPS_FRACTION`` is the share of
-    # the full schedule run for that refinement. Both are model-agnostic and
-    # hard-coded here, like the other advanced sampler params.
+    # Optional latent upscaling + refine (SesquiLSR). ``UPSCALE_SCALE`` is the
+    # latent upscale factor (2x). The refine is a single final low-strength
+    # denoise step on the upscaled latent — the ``denoise=0.1`` second KSampler
+    # pass in ComfyUI. Its noise level is taken from the schedule's last
+    # timestep, which lands naturally around 0.1 for both models' schedules.
     UPSCALE_SCALE = 2
-    REFINE_STRENGTH = 0.1
-    REFINE_STEPS_FRACTION = 0.1
 
     @staticmethod
     @abstractmethod
@@ -331,23 +329,19 @@ class DiffusionModel(ABC):
         seed: int,
         guidance_scale: float,
     ) -> torch.Tensor:
-        """Short low-strength refine denoise on an already-clean latent.
+        """One low-strength refine denoise step on an already-clean latent.
 
-        Mirrors the ``denoise=0.1`` second KSampler pass in ComfyUI: a small
-        amount of noise is added to the clean upscaled latent, then the last
-        ``REFINE_STEPS_FRACTION`` of the schedule is run with its timesteps
-        rescaled to span ``[REFINE_STRENGTH, 0]``. Rescaling keeps the noise
-        level equal to the total Euler delta applied, so the update is
-        self-consistent: ``x <- x - delta*v`` removes exactly the added noise.
+        Mirrors the ``denoise=0.1`` second KSampler pass in ComfyUI. We run a
+        single final step — the last step of the full schedule, whose timestep
+        ``t`` lands naturally around 0.1 for both models' schedules. A small
+        amount of noise at that level is added to the clean upscaled latent; the
+        total Euler delta applied equals ``t``, so the update is self-consistent
+        and removes exactly the added noise: ``x <- x - delta*v``.
         """
-        strength = self.REFINE_STRENGTH
-
         full = self.schedule(steps, height, width)
-        refine_steps = max(2, round(self.REFINE_STEPS_FRACTION * len(full)))
-        k = max(0, len(full) - refine_steps)
-        sub = full[k:]
-        t_first = float(sub[0].t)
-        scale = strength / t_first if t_first > 0 else 0.0
+        k = len(full) - 1
+        sub = full[k:]  # the single last step of the schedule
+        strength = float(sub[0].t)  # noise level == the step's timestep
 
         # Add a small amount of noise (seeded) to the clean upscaled latent.
         generator = torch.Generator(device=self.device).manual_seed(seed)
@@ -356,11 +350,9 @@ class DiffusionModel(ABC):
 
         x = self.prepare_latent(noised, cond, steps, height, width)
         dtype = x.dtype
-        for i, step in enumerate(sub):
-            t = step.t * scale
-            delta = step.delta * scale
-            v = self.denoise_step(x, t, cond, guidance_scale, i)
-            x = x.float() - delta * v.float()
+        for i, step in tqdm(enumerate(sub), total=len(sub), desc="refining"):
+            v = self.denoise_step(x, step.t, cond, guidance_scale, k + i)
+            x = x.float() - step.delta * v.float()
             x = x.to(dtype)
         return self.finalize_latent(x, height, width)
 
