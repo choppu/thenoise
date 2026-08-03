@@ -103,14 +103,3 @@ def load_krea2_text_encoder(
         select_layers=select_layers,
         tokenizer_repo=tokenizer_repo,
     )
-
-
-@torch.no_grad()
-def get_krea2_prompt_embeds(encoder: Qwen3VLConditioner, prompts: list[str]) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return (hiddens, mask).
-
-    hiddens: (B, seq, num_select_layers, hidden) stacked selected hidden states.
-    mask:    (B, seq) bool attention mask (valid tokens incl. suffix, padding=False).
-    """
-    hiddens, mask = encoder(prompts)
-    return hiddens, mask.to(dtype=torch.bool)

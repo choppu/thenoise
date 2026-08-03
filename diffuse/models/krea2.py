@@ -9,9 +9,17 @@ Project decisions baked in here:
   * SDPA attention (``attn_mode="torch"``) -- no flash-attn needed on ROCm
   * no block swap (everything fits in 128GB unified RAM)
   * LoRA merging at load time via ``krea2_utils.load_krea2_dit(lora_weights=...)``
+  * the text encoder stays resident (plenty of unified RAM), so it is never
+    freed/reloaded between requests
 
 The model class owns its defaults, including the "advanced" sampler parameters
 (``y1``, ``y2``, ``mu``), which are hard-coded and NOT exposed to the API/CLI.
+
+The base ``DiffusionModel`` owns the pipeline (encode -> shared denoise loop ->
+decode -> postprocess). Krea2's DiT operates on patched token sequences, so
+``prepare_latent`` patchifies the canonical latent and builds the position/mask
+tensors ONCE around the loop, and ``finalize_latent`` unpatchifies back. The
+per-step ``denoise_step`` is then just the DiT forward + CFG.
 
 Inference is serialized with a lock: torch forward on a shared model is not
 thread-safe, so concurrent requests are queued per model.
@@ -19,32 +27,34 @@ thread-safe, so concurrent requests are queued per model.
 from __future__ import annotations
 
 import logging
-import random
-import threading
 from typing import Optional
 
 import torch
-from PIL import Image
+from einops import rearrange
 from safetensors.torch import load_file
 
 from diffuse.dit.krea2 import utils as krea2_utils
-from diffuse.dit.krea2.sampling import encode_prompts, sample
-from diffuse.vae import load_vae
+from diffuse.dit.krea2.sampling import encode_prompts, prepare, roundup, timesteps
+from diffuse.models.base import Conditioning, DiffusionModel, Step
 
 logger = logging.getLogger(__name__)
 
 
-class Krea2Model:
+class Krea2Model(DiffusionModel):
     name = "krea2"
 
     # Model-owned defaults (incl. advanced sampler params -- not exposed to API/CLI).
     DEFAULT_STEPS = 8
-    DEFAULT_GUIDANCE_SCALE = 0.0
+    DEFAULT_GUIDANCE_SCALE = 1.0
     DEFAULT_WIDTH = 1024
     DEFAULT_HEIGHT = 1024
     DEFAULT_Y1 = 0.5
     DEFAULT_Y2 = 1.15
     DEFAULT_MU = 1.15
+
+    # Resolution-aware schedule interpolation endpoints (image-token counts).
+    DEFAULT_MINRES = 256
+    DEFAULT_MAXRES = 1280
 
     @staticmethod
     def detect(f) -> bool:
@@ -65,9 +75,15 @@ class Krea2Model:
         lora_weights: Optional[list] = None,
         lora_multipliers: Optional[list] = None,
     ):
-        self.device = device
-        self.dtype = dtype
-        self._lock = threading.Lock()
+        super().__init__(
+            dit_path=dit_path,
+            vae_path=vae_path,
+            text_encoder_path=text_encoder_path,
+            device=device,
+            dtype=dtype,
+            lora_weights=lora_weights,
+            lora_multipliers=lora_multipliers,
+        )
 
         # LoRA state dicts are merged into the base weights at load time.
         lora_sds = [load_file(p) for p in (lora_weights or [])]
@@ -83,63 +99,128 @@ class Krea2Model:
             lora_multipliers=mults or None,
         )
 
-        logger.info("Loading Krea 2 VAE from %s", vae_path)
-        self.ae = load_vae(vae_path, input_channels=3, device=device, disable_mmap=True)
-        self.ae = self.ae.to(dtype).eval().requires_grad_(False)
-
         logger.info("Loading Krea 2 text encoder from %s", text_encoder_path)
         self.encoder = krea2_utils.load_krea2_text_encoder(
             text_encoder_path, dtype=dtype, device=device
         )
 
+        # VAE latent geometry (shared Qwen-Image VAE): 8x spatial compression.
+        self._compression = 2 ** len(self.vae.temperal_downsample)
+
         logger.info("Krea 2 model ready on %s (%s)", device, dtype)
 
-    def generate(
+    # ------------------------------------------------------------ kernels
+    def encode_prompt(
         self,
-        *,
         prompt: str,
         negative_prompt: str = "",
-        width: Optional[int] = None,
-        height: Optional[int] = None,
-        steps: Optional[int] = None,
-        guidance_scale: Optional[float] = None,
-        seed: Optional[int] = None,
-    ) -> Image.Image:
-        """Encode -> denoise -> decode. Returns a single PIL image."""
-        width = width or self.DEFAULT_WIDTH
-        height = height or self.DEFAULT_HEIGHT
-        steps = steps or self.DEFAULT_STEPS
-        guidance_scale = (
-            self.DEFAULT_GUIDANCE_SCALE
-            if guidance_scale is None
-            else guidance_scale
+        *,
+        guidance_scale: float,
+    ) -> Conditioning:
+        cfg = guidance_scale > 1.0
+        txt, txtmask, untxt, untxtmask = encode_prompts(
+            self.encoder, [prompt], [negative_prompt], cfg=cfg
+        )
+        return Conditioning(cond=txt, cond_mask=txtmask, null=untxt, null_mask=untxtmask)
+
+    def init_latents(self, height: int, width: int, seed: int) -> torch.Tensor:
+        dev = torch.device(self.device)
+        generator = torch.Generator(device=dev).manual_seed(seed)
+        return torch.randn(
+            1,
+            self.vae.z_dim,
+            height // self._compression,
+            width // self._compression,
+            device=dev,
+            dtype=self.dtype,
+            generator=generator,
         )
 
-        with self._lock:
-            cfg = guidance_scale > 1.0
-            txt, txtmask, untxt, untxtmask = encode_prompts(
-                self.encoder, [prompt], [negative_prompt], cfg=cfg
-            )
+    def prepare_latent(
+        self,
+        latents: torch.Tensor,
+        cond: Conditioning,
+        steps: int,
+        height: int,
+        width: int,
+    ) -> torch.Tensor:
+        """Patchify the canonical latent and build pos/mask for the DiT, ONCE.
 
-            if seed is None:
-                seed = random.randint(0, 2**32 - 1)
+        ``prepare`` converts the latent to ``[B, seq, C*patch^2]`` image tokens
+        and derives the combined image+text position/mask tensors. Those (plus the
+        text embeddings, moved to device) are stashed on the instance so the
+        per-step ``denoise_step`` stays a pure DiT forward. Safe under the lock.
+        """
+        dev = torch.device(self.device)
+        patch = self.dit.config.patch
 
-            images = sample(
-                self.dit,
-                self.ae,
-                txt,
-                txtmask,
-                untxt=untxt,
-                untxtmask=untxtmask,
-                device=self.device,
-                dtype=self.dtype,
-                width=width,
-                height=height,
-                steps=steps,
-                cfg_scale=guidance_scale,
-                seed=seed,
-                y1=self.DEFAULT_Y1,
-                y2=self.DEFAULT_Y2,
-                mu=self.DEFAULT_MU,
+        txt = cond.cond.to(device=dev, dtype=self.dtype)
+        txtmask = cond.cond_mask.to(device=dev)
+        img, pos, mask = prepare(latents, txt.shape[1], patch, txtmask)
+        self._txt, self._pos, self._mask = txt, pos, mask
+
+        if cond.null is not None:
+            untxt = cond.null.to(device=dev, dtype=self.dtype)
+            untxtmask = cond.null_mask.to(device=dev)
+            _, unpos, unmask = prepare(latents, untxt.shape[1], patch, untxtmask)
+            self._untxt, self._unpos, self._unmask = untxt, unpos, unmask
+        else:
+            self._untxt = self._unpos = self._unmask = None
+
+        return img
+
+    def schedule(self, steps: int, height: int, width: int) -> list[Step]:
+        patch = self.dit.config.patch
+        align = self._compression * patch
+        seq_len = (height // align) * (width // align)
+        x1 = (self.DEFAULT_MINRES // align) ** 2
+        x2 = (self.DEFAULT_MAXRES // align) ** 2
+        ts = timesteps(
+            seq_len, steps, x1, x2,
+            y1=self.DEFAULT_Y1, y2=self.DEFAULT_Y2, mu=self.DEFAULT_MU,
+        )
+        return [Step(t=ts[i], delta=ts[i] - ts[i + 1]) for i in range(len(ts) - 1)]
+
+    def denoise_step(
+        self,
+        latents: torch.Tensor,
+        t: torch.Tensor,
+        cond: Conditioning,
+        guidance_scale: float,
+        i: int,
+    ) -> torch.Tensor:
+        dev = torch.device(self.device)
+        device_type = torch.device(dev).type
+        t_full = torch.full((len(latents),), t, dtype=latents.dtype, device=dev)
+        with torch.autocast(device_type=device_type, dtype=self.dtype):
+            cond_out = self.dit(
+                img=latents, context=self._txt, t=t_full, pos=self._pos, mask=self._mask
             )
-            return images[0]
+            if guidance_scale > 1.0 and self._untxt is not None:
+                uncond = self.dit(
+                    img=latents, context=self._untxt, t=t_full, pos=self._unpos, mask=self._unmask
+                )
+                v = uncond + guidance_scale * (cond_out - uncond)
+            else:
+                v = cond_out
+        return v
+
+    def finalize_latent(self, latents: torch.Tensor, height: int, width: int) -> torch.Tensor:
+        # Unpatchify back to the canonical 4D latent [B, C, H//8, W//8].
+        patch = self.dit.config.patch
+        h_ = height // (self._compression * patch)
+        w_ = width // (self._compression * patch)
+        return rearrange(
+            latents,
+            "b (h w) (c ph pw) -> b c (h ph) (w pw)",
+            ph=patch,
+            pw=patch,
+            h=h_,
+            w=w_,
+        )
+
+    def resolve_size(self, width: int, height: int) -> tuple[int, int]:
+        # The latent grid is patchified in `patch`-sized blocks, so width/height
+        # must be multiples of compression * patch. Pad up otherwise.
+        align = self._compression * self.dit.config.patch
+        return roundup(width, align, "width"), roundup(height, align, "height")

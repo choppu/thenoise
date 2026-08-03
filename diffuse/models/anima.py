@@ -14,33 +14,31 @@ Project decisions baked in here (same as Krea2):
 The model class owns its defaults, including the "advanced" sampler parameter
 (``flow_shift``), which is hard-coded and NOT exposed to the API/CLI.
 
+The base ``DiffusionModel`` owns the pipeline (encode -> shared denoise loop ->
+decode -> postprocess). Anima implements the model-specific kernels: its DiT
+operates on a 5D latent ``[B, C, 1, H, W]`` (a frame axis of 1), so ``prepare_latent``
+adds and ``finalize_latent`` removes that axis around the shared loop.
+
 Inference is serialized with a lock (torch forward on a shared model is not
 thread-safe).
 """
 from __future__ import annotations
 
 import logging
-import random
-import threading
 from typing import Optional
 
 import torch
-from PIL import Image
 from safetensors.torch import load_file
-from tqdm import tqdm
 
 from diffuse.dit.anima import utils as anima_utils
 from diffuse.dit.anima import sampling as anima_sampling
 from diffuse.dit.anima.strategy import AnimaTextEncodingStrategy, AnimaTokenizeStrategy
-from diffuse.vae import load_vae
+from diffuse.models.base import Conditioning, DiffusionModel, Step
 
 logger = logging.getLogger(__name__)
 
-# Anima uses a Qwen-Image style 8x VAE, same as Krea2.
-_VAE_SCALE = 8
 
-
-class AnimaModel:
+class AnimaModel(DiffusionModel):
     name = "anima"
 
     # Model-owned defaults (incl. advanced sampler params -- not exposed to API/CLI).
@@ -69,9 +67,15 @@ class AnimaModel:
         lora_weights: Optional[list] = None,
         lora_multipliers: Optional[list] = None,
     ):
-        self.device = device
-        self.dtype = dtype
-        self._lock = threading.Lock()
+        super().__init__(
+            dit_path=dit_path,
+            vae_path=vae_path,
+            text_encoder_path=text_encoder_path,
+            device=device,
+            dtype=dtype,
+            lora_weights=lora_weights,
+            lora_multipliers=lora_multipliers,
+        )
 
         # LoRA state dicts are merged into the base weights at load time.
         lora_sds = [load_file(p) for p in (lora_weights or [])]
@@ -109,52 +113,21 @@ class AnimaModel:
         )
         self.encoding_strategy = AnimaTextEncodingStrategy()
 
-        # VAE.
-        logger.info("Loading Anima VAE from %s", vae_path)
-        self.vae = load_vae(
-            vae_path,
-            device=device,
-            disable_mmap=True,
-            spatial_chunk_size=None,
-            disable_cache=True,
-        )
-        self.vae = self.vae.to(dtype).eval().requires_grad_(False)
-
         logger.info("Anima model ready on %s (%s)", device, dtype)
 
-    def generate(
+    # ------------------------------------------------------------ kernels
+    def encode_prompt(
         self,
-        *,
         prompt: str,
         negative_prompt: str = "",
-        width: Optional[int] = None,
-        height: Optional[int] = None,
-        steps: Optional[int] = None,
-        guidance_scale: Optional[float] = None,
-        seed: Optional[int] = None,
-    ) -> Image.Image:
-        """Encode -> denoise -> decode. Returns a single PIL image."""
-        width = width or self.DEFAULT_WIDTH
-        height = height or self.DEFAULT_HEIGHT
-        steps = steps or self.DEFAULT_STEPS
-        guidance_scale = (
-            self.DEFAULT_GUIDANCE_SCALE
-            if guidance_scale is None
-            else guidance_scale
-        )
-        if height % 32 != 0 or width % 32 != 0:
-            raise ValueError(f"height and width must be divisible by 32, got {height}x{width}")
-
-        with self._lock:
-            if seed is None:
-                seed = random.randint(0, 2**32 - 1)
-
-            cond_embed = self._encode_prompt(prompt)
-            null_embed = self._encode_prompt(negative_prompt) if guidance_scale != 1.0 else cond_embed
-
-            latent = self._denoise(cond_embed, null_embed, guidance_scale, steps, height, width, seed)
-            pixels = self._decode(latent)
-            return self._to_pil(pixels)
+        *,
+        guidance_scale: float,
+    ) -> Conditioning:
+        cond = self._encode_prompt(prompt)
+        null = None
+        if guidance_scale > 1.0:
+            null = self._encode_prompt(negative_prompt)
+        return Conditioning(cond=cond, null=null)
 
     def _encode_prompt(self, prompt: str) -> torch.Tensor:
         """Tokenize -> Qwen3 encode -> LLM-adapter cross-attention embedding (bf16)."""
@@ -172,50 +145,59 @@ class AnimaModel:
             crossattn_emb[~embed[3].bool()] = 0
             return crossattn_emb.to(torch.bfloat16)
 
-    def _denoise(
+    def init_latents(self, height: int, width: int, seed: int) -> torch.Tensor:
+        dev = torch.device(self.device)
+        num_channels = self.dit.LATENT_CHANNELS
+        shape = (1, num_channels, height // self._VAE_SCALE, width // self._VAE_SCALE)
+        generator = torch.Generator(device=dev).manual_seed(seed)
+        return torch.randn(shape, generator=generator, device=dev, dtype=self.dtype)
+
+    def prepare_latent(
         self,
-        cond_embed: torch.Tensor,
-        null_embed: torch.Tensor,
-        guidance_scale: float,
+        latents: torch.Tensor,
+        cond: Conditioning,
         steps: int,
         height: int,
         width: int,
-        seed: int,
+    ) -> torch.Tensor:
+        # The Anima DiT expects a frame axis: [B, C, H, W] -> [B, C, 1, H, W].
+        return latents.unsqueeze(2)
+
+    def schedule(self, steps: int, height: int, width: int) -> list[Step]:
+        dev = torch.device(self.device)
+        timesteps, sigmas = anima_sampling.get_timesteps_sigmas(steps, self.DEFAULT_FLOW_SHIFT, dev)
+        timesteps = (timesteps / 1000).to(dev, dtype=self.dtype)
+        sigmas = sigmas.to(dev)
+        return [
+            Step(t=timesteps[i], delta=sigmas[i] - sigmas[i + 1])
+            for i in range(len(sigmas) - 1)
+        ]
+
+    def denoise_step(
+        self,
+        latents: torch.Tensor,
+        t: torch.Tensor,
+        cond: Conditioning,
+        guidance_scale: float,
+        i: int,
     ) -> torch.Tensor:
         dev = torch.device(self.device)
-        seed_g = torch.Generator(device=dev).manual_seed(seed)
-
-        num_channels = self.dit.LATENT_CHANNELS
-        shape = (1, num_channels, 1, height // _VAE_SCALE, width // _VAE_SCALE)
-        latents = torch.randn(shape, generator=seed_g, device=dev, dtype=torch.bfloat16)
-        padding_mask = torch.zeros(1, 1, height // _VAE_SCALE, width // _VAE_SCALE, dtype=torch.bfloat16, device=dev)
-
-        timesteps, sigmas = anima_sampling.get_timesteps_sigmas(steps, self.DEFAULT_FLOW_SHIFT, dev)
-        timesteps = (timesteps / 1000).to(dev, dtype=torch.bfloat16)
-
-        do_cfg = guidance_scale != 1.0
-        for i, t in tqdm(enumerate(timesteps), total=len(timesteps), desc="sampling"):
-            t_expand = t.expand(latents.shape[0])
-            with torch.no_grad():
-                noise_pred = self.dit(latents, t_expand, cond_embed, padding_mask=padding_mask)
-                if do_cfg:
-                    uncond = self.dit(latents, t_expand, null_embed, padding_mask=padding_mask)
-                    noise_pred = uncond + guidance_scale * (noise_pred - uncond)
-            latents = anima_sampling.step(latents, noise_pred, sigmas, i).to(latents.dtype)
-        return latents
-
-    def _decode(self, latent: torch.Tensor) -> torch.Tensor:
-        dev = torch.device(self.device)
+        t_expand = t.expand(latents.shape[0])
+        padding_mask = torch.zeros(
+            1, 1, latents.shape[3], latents.shape[4], dtype=torch.bfloat16, device=dev
+        )
         with torch.no_grad():
-            pixels = self.vae.decode_to_pixels(latent.to(dev, dtype=self.vae.dtype))
-        if pixels.ndim == 5:  # [B, C, 1, H, W] -> [B, C, H, W]
-            pixels = pixels.squeeze(2)
-        pixels = pixels.to("cpu", dtype=torch.float32)
-        return pixels[0]  # [C, H, W] in [-1, 1]
+            noise_pred = self.dit(latents, t_expand, cond.cond, padding_mask=padding_mask)
+            if guidance_scale > 1.0 and cond.null is not None:
+                uncond = self.dit(latents, t_expand, cond.null, padding_mask=padding_mask)
+                noise_pred = uncond + guidance_scale * (noise_pred - uncond)
+        return noise_pred
 
-    @staticmethod
-    def _to_pil(sample: torch.Tensor) -> Image.Image:
-        x = torch.clamp(sample, -1.0, 1.0)
-        x = ((x + 1.0) * 127.5).to(torch.uint8).numpy()
-        x = x.transpose(1, 2, 0)  # C, H, W -> H, W, C
-        return Image.fromarray(x)
+    def finalize_latent(self, latents: torch.Tensor, height: int, width: int) -> torch.Tensor:
+        # Drop the frame axis back to canonical 4D: [B, C, 1, H, W] -> [B, C, H, W].
+        return latents.squeeze(2)
+
+    def resolve_size(self, width: int, height: int) -> tuple[int, int]:
+        if height % 32 != 0 or width % 32 != 0:
+            raise ValueError(f"height and width must be divisible by 32, got {height}x{width}")
+        return width, height

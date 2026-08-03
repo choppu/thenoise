@@ -27,18 +27,3 @@ def get_timesteps_sigmas(sampling_steps: int, shift: float, device: torch.device
     sigmas = sigmas.to(torch.float32)
     timesteps = (sigmas[:-1] * 1000).to(dtype=torch.float32, device=device)
     return timesteps, sigmas
-
-
-def step(latents, noise_pred, sigmas, step_i):
-    """Perform a single diffusion sampling step.
-
-    Args:
-        latents: Current latent state.
-        noise_pred: Predicted noise.
-        sigmas: Noise schedule sigmas.
-        step_i: Current step index.
-
-    Returns:
-        Updated latents after the step.
-    """
-    return latents.float() - (sigmas[step_i] - sigmas[step_i + 1]) * noise_pred.float()

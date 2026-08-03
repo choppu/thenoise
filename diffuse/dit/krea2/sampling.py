@@ -1,15 +1,15 @@
-"""Functional flow-matching sampler for the K2 MMDiT (no Scheduler class).
+"""Sampler helpers for the K2 MMDiT (no Scheduler class).
 
-Ported verbatim from references/Krea2/sampling.py.
+These build the pieces of the K2 flow-matching sampler that are reused by the
+model adapter: resolution-aware timestep scheduling, latent patchification, and
+text-embedding gathering. The denoising loop itself lives in the shared
+``DiffusionModel`` base class.
 """
 
-import gc
 import math
 
 import torch
 from einops import rearrange, repeat
-from PIL import Image
-from tqdm import tqdm
 
 
 def roundup(value, multiple, name):
@@ -85,10 +85,9 @@ def encode_prompts(encoder, prompts, negative_prompts=None, *, cfg=True):
     """Encode prompts (and optional negatives) into gathered varlen text embeddings.
 
     Returns ``(txt, txtmask, untxt, untxtmask)``; the unconditional pair is ``None`` when
-    ``cfg`` is False. Run this BEFORE loading the DiT so the (~8GB Qwen3-VL) encoder can be
-    freed and not compete with the DiT for VRAM — on a 24GB card the encoder and the DiT do
-    not fit at the same time. ``gather_valid_text`` drops the interior padding the encoder
+    ``cfg`` is False. ``gather_valid_text`` drops the interior padding the encoder
     inserts between prompt and suffix so the valid tokens form a contiguous prefix.
+    The encoder stays resident (plenty of unified RAM); it is never freed/reloaded.
     """
     txt, txtmask = encoder(prompts)
     txt, txtmask = gather_valid_text(txt, txtmask)
@@ -101,121 +100,3 @@ def encode_prompts(encoder, prompts, negative_prompts=None, *, cfg=True):
         untxt, untxtmask = gather_valid_text(untxt, untxtmask)
 
     return txt, txtmask, untxt, untxtmask
-
-
-@torch.no_grad()
-def sample(
-    model,
-    ae,
-    txt,
-    txtmask,
-    *,
-    untxt=None,
-    untxtmask=None,
-    device="cuda",
-    dtype=torch.bfloat16,
-    width=1024,
-    height=1024,
-    steps=28,
-    cfg_scale=5.5,
-    seed=0,
-    minres=256,
-    maxres=1280,
-    y1=0.5,
-    y2=1.15,
-    mu=None,
-):
-    """Denoise pre-encoded text embeddings to images: euler+CFG denoise -> decode.
-
-    Takes the gathered text embeddings from ``encode_prompts`` (not the encoder), so the
-    encoder can be freed before this runs. CFG is enabled when ``cfg_scale > 1`` and an
-    unconditional embedding (``untxt``) was provided.
-
-    The DiT (``model``) and VAE (``ae``) both stay resident on their device for the whole
-    call — neither is moved to CPU. On Strix Halo's unified memory everything fits alongside
-    the DiT, so the VAE is decoded in place. Keeping both resident lets the caller reuse them
-    for the next prompt without reloading.
-    """
-    patch = model.config.patch
-
-    # Qwen-Image VAE geometry (f8, 16 latent channels), read from the musubi
-    # AutoencoderKLQwenImage so K2 shares the same VAE as the rest of musubi.
-    compression = 2 ** len(ae.temperal_downsample)
-    channels = ae.z_dim
-
-    # The latent grid (dim // compression) is patchified in `patch`-sized blocks,
-    # so width/height must be multiples of compression * patch. Pad up otherwise.
-    align = compression * patch
-    width, height = roundup(width, align, "width"), roundup(height, align, "height")
-
-    n = txt.shape[0]
-    cfg = cfg_scale > 1.0 and untxt is not None
-
-    # Text embeddings come from the (now-freed) encoder; make sure they are on the compute device.
-    txt, txtmask = txt.to(device=device, dtype=dtype), txtmask.to(device)
-    if cfg:
-        untxt, untxtmask = untxt.to(device=device, dtype=dtype), untxtmask.to(device)
-
-    # Per-prompt seeded gaussian latent noise.
-    noise = torch.cat(
-        [
-            torch.randn(
-                1,
-                channels,
-                height // compression,
-                width // compression,
-                device=device,
-                dtype=dtype,
-                generator=torch.Generator(device=device).manual_seed(seed + i),
-            )
-            for i in range(n)
-        ],
-        dim=0,
-    )
-
-    x, pos, mask = prepare(noise, txt.shape[1], patch, txtmask)
-    if cfg:
-        _, unpos, unmask = prepare(noise, untxt.shape[1], patch, untxtmask)
-
-    # min_res/max_res define the (x1,y1)-(x2,y2) interpolation endpoints for `mu`.
-    x1 = (minres // (compression * patch)) ** 2
-    x2 = (maxres // (compression * patch)) ** 2
-    ts = timesteps(x.shape[1], steps, x1, x2, y1=y1, y2=y2, mu=mu)
-
-    # Euler integration of the flow ODE with CFG. Run the DiT under autocast: with fp8 the
-    # non-quantized layers (e.g. `first`) keep their checkpoint dtype (fp32), so without
-    # autocast a bf16 activation hits "mat1 and mat2 must have the same dtype". This mirrors
-    # how training wraps both call_dit and sample generation (trainer_base) in autocast; for
-    # the non-fp8 (all-bf16) path it is effectively a no-op.
-    img = x
-    device_type = torch.device(device).type
-    with torch.autocast(device_type=device_type, dtype=dtype):
-        for tcurr, tprev in tqdm(zip(ts[:-1], ts[1:]), total=len(ts) - 1, desc="sampling"):
-            t = torch.full((len(img),), tcurr, dtype=img.dtype, device=img.device)
-            cond = model(img=img, context=txt, t=t, pos=pos, mask=mask)
-            if cfg:
-                uncond = model(img=img, context=untxt, t=t, pos=unpos, mask=unmask)
-                v = uncond + cfg_scale * (cond - uncond)
-            else:
-                v = cond
-            img = img + (tprev - tcurr) * v
-
-    # Unpatchify back to a latent (add the VAE frame axis) and decode to pixels.
-    img = rearrange(
-        img,
-        "b (h w) (c ph pw) -> b c 1 (h ph) (w pw)",
-        ph=patch,
-        pw=patch,
-        h=height // (compression * patch),
-        w=width // (compression * patch),
-    )
-    # decode_to_pixels denormalizes (*std + mean), decodes, drops the frame axis, returns
-    # pixels in [-1, 1] (the shared sd-scripts Qwen-Image VAE clamps to [-1, 1], not [0, 1]),
-    # so scale to [0, 1] before converting to bytes. The VAE is already resident on the
-    # latent's device (loaded there in the model adapter), so decode in place.
-    pixels = ae.decode_to_pixels(img.to(torch.bfloat16))
-    pixels = rearrange((pixels.squeeze(2) + 1.0) / 2.0 * 255.0, "b c h w -> b h w c").cpu().byte().numpy()
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    return [Image.fromarray(pixels[i]) for i in range(len(pixels))]
