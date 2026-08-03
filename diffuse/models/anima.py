@@ -46,7 +46,8 @@ class AnimaModel(DiffusionModel):
     DEFAULT_GUIDANCE_SCALE = 3.5
     DEFAULT_WIDTH = 1024
     DEFAULT_HEIGHT = 1024
-    DEFAULT_FLOW_SHIFT = 5.0
+    # Matches ComfyUI's Anima sampling_settings ``shift: 3.0`` (ModelSamplingDiscreteFlow).
+    DEFAULT_FLOW_SHIFT = 3.0
 
     @staticmethod
     def detect(f) -> bool:

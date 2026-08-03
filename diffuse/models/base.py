@@ -94,11 +94,15 @@ class DiffusionModel(ABC):
     _VAE_SCALE = 8
 
     # Optional latent upscaling + refine (SesquiLSR). ``UPSCALE_SCALE`` is the
-    # latent upscale factor (2x). The refine is a single final low-strength
-    # denoise step on the upscaled latent — the ``denoise=0.1`` second KSampler
-    # pass in ComfyUI. Its noise level is taken from the schedule's last
-    # timestep, which lands naturally around 0.1 for both models' schedules.
+    # latent upscale factor (2x). The refine mirrors ComfyUI's SEPARATE second
+    # KSampler pass (img2img, steps=1, denoise=0.1, euler, simple scheduler): it
+    # builds an independent ``int(REFINE_STEPS/REFINE_DENOISE)``-step schedule
+    # and takes the last ``REFINE_STEPS`` steps of it. It deliberately does NOT
+    # reuse the original generation ``steps`` — the second KSampler in ComfyUI
+    # never sees how many steps the first one used.
     UPSCALE_SCALE = 2
+    REFINE_STEPS = 1     # ComfyUI second-KSampler ``steps``
+    REFINE_DENOISE = 0.1  # ComfyUI second-KSampler ``denoise``
 
     @staticmethod
     @abstractmethod
@@ -314,16 +318,17 @@ class DiffusionModel(ABC):
             raw_up = upscaler(raw, (scale * h, scale * w))
             z_up = adaptor.from_vae_latent(raw_up.float()).to(self.dtype)
 
-        # One short low-strength refine denoise at the upscaled size.
+        # One short low-strength refine denoise at the upscaled size. The refine
+        # runs on an independent schedule (see ``_refine``), so the original
+        # ``steps`` count is deliberately NOT forwarded.
         return self._refine(
-            z_up, cond, steps, scale * height, scale * width, seed, guidance_scale
+            z_up, cond, scale * height, scale * width, seed, guidance_scale
         )
 
     def _refine(
         self,
         z: torch.Tensor,
         cond: Conditioning,
-        steps: int,
         height: int,
         width: int,
         seed: int,
@@ -331,27 +336,33 @@ class DiffusionModel(ABC):
     ) -> torch.Tensor:
         """One low-strength refine denoise step on an already-clean latent.
 
-        Mirrors the ``denoise=0.1`` second KSampler pass in ComfyUI. We run a
-        single final step — the last step of the full schedule, whose timestep
-        ``t`` lands naturally around 0.1 for both models' schedules. A small
-        amount of noise at that level is added to the clean upscaled latent; the
-        total Euler delta applied equals ``t``, so the update is self-consistent
-        and removes exactly the added noise: ``x <- x - delta*v``.
+        Mirrors ComfyUI's separate second KSampler (img2img, steps=1,
+        denoise=0.1, euler, simple scheduler). ComfyUI computes the refine
+        sigmas from an INDEPENDENT ``int(steps/denoise)``-step schedule and
+        keeps the last ``steps`` of them — it never sees how many steps the
+        first KSampler used, so neither do we. The noise is blended with the
+        model-sampling's CONST scaling ``x = sigma*noise + (1-sigma)*z``, and a
+        single Euler step ``x -= sigma*v`` removes it (delta == t == strength
+        for the final step).
         """
-        full = self.schedule(steps, height, width)
-        k = len(full) - 1
-        sub = full[k:]  # the single last step of the schedule
-        strength = float(sub[0].t)  # noise level == the step's timestep
+        refine_steps = self.REFINE_STEPS
+        denoise = self.REFINE_DENOISE
+        new_steps = int(refine_steps / denoise)  # int(1/0.1) = 10
 
-        # Add a small amount of noise (seeded) to the clean upscaled latent.
+        # Last ``refine_steps`` steps of an independent ``new_steps`` schedule.
+        full = self.schedule(new_steps, height, width)
+        sub = full[-refine_steps:]
+        strength = float(sub[0].t)  # sigma_hat == the step's timestep
+
+        # ComfyUI CONST noise scaling: x = sigma*noise + (1-sigma)*z.
         generator = torch.Generator(device=self.device).manual_seed(seed)
         noise = torch.randn_like(z, generator=generator)
-        noised = z + strength * noise
+        noised = strength * noise + (1.0 - strength) * z
 
-        x = self.prepare_latent(noised, cond, steps, height, width)
+        x = self.prepare_latent(noised, cond, new_steps, height, width)
         dtype = x.dtype
         for i, step in tqdm(enumerate(sub), total=len(sub), desc="refining"):
-            v = self.denoise_step(x, step.t, cond, guidance_scale, k + i)
+            v = self.denoise_step(x, step.t, cond, guidance_scale, i)
             x = x.float() - step.delta * v.float()
             x = x.to(dtype)
         return self.finalize_latent(x, height, width)
