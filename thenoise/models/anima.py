@@ -64,6 +64,7 @@ class AnimaModel(DiffusionModel):
             fp8_scaled=False,
         )
         self.dit.eval().requires_grad_(False)
+        self.dit = torch.compile(self.dit)
 
         # Text encoder (Qwen3-0.6B) + tokenizers.
         logger.info("Loading Anima text encoder from %s", text_encoder_path)

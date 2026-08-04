@@ -6,6 +6,17 @@ Loads one model at a time and generates images from text prompts. Available as a
 
 ---
 
+## Why? ComfyUI exists
+
+Yes, and ComfyUI will always be better than this for the advanced user. This is good for the following scenarios:
+
+1. You got a Strix Halo (congratulations!) and want to quickly start generating images
+2. You don't want to care about "workflows"
+3. You want to add an easy but powerful image generation endpoint for usage through other software
+4. You want something targeted at your machine. Our goal is to optimize this for Strix Halo as much as possible.
+
+---
+
 ## Setup
 
 TheNoise ships with a bootstrap script (`thenoise.sh`) that handles everything:
@@ -33,11 +44,21 @@ GFX_ARCH=gfx1150 ./thenoise.sh serve ...
 
 ---
 
+## Performance
+
+**First-run compilation:** the DiT model is compiled with `torch.compile` on load. The first
+generation will be noticeably slower while the inductor traces and compiles kernels. 
+You will also see some warnings on the console, these are normal.
+All subsequent generations use the cached compiled code and run at full speed. 
+Compilation is transparent — no configuration needed.
+
+---
+
 ## Supported Models
 
-### Krea 2 (K2)
+At the moment, only Krea 2 and Anima are supported. New models will be added. PRs adding model support are welcome.
 
-Single-stream MMDiT with Qwen3-VL text encoder and Qwen-Image VAE.
+### Krea 2
 
 Download:
 

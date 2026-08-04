@@ -173,13 +173,12 @@ class DiffusionModel(ABC):
 
     def _load_vae(self, vae_path: str):
         """Load the shared Qwen-Image VAE onto device/dtype."""
-        vae = load_vae(
+        return load_vae(
             vae_path,
             device=self.device,
             disable_mmap=True,
             disable_cache=True,
-        )
-        return vae.to(self.dtype).eval().requires_grad_(False)
+        ).to(self.dtype).eval().requires_grad_(False)
 
     # ------------------------------------------------------------------ hooks
     @abstractmethod

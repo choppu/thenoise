@@ -55,6 +55,19 @@ def _match_lora_keys(
     return None
 
 
+def _unwrap_compiled(model: torch.nn.Module) -> torch.nn.Module:
+    """Unwrap a torch.compile OptimizedModule to get the original module.
+
+    torch.compile wraps the model in an OptimizedModule whose state_dict()/load_state_dict()
+    may not delegate correctly. Operating on the original module ensures LoRA key matching 
+    and weight modification work correctly. The compiled kernels reference the same underlying 
+    parameter tensors, so they see updates.
+    """
+    while hasattr(model, "_orig_mod"):
+        model = model._orig_mod
+    return model
+
+
 def _compute_lora_delta(
     model_weight: torch.Tensor,
     down_weight: torch.Tensor,
@@ -132,11 +145,13 @@ def apply_lora_to_model(
 
     logger.info("Applying LoRA to model. multipliers: %s", multipliers)
 
+    base_model = _unwrap_compiled(model)
+
     # Build key sets for each LoRA
     lora_weight_keys_list = [set(sd.keys()) for sd in lora_sds]
 
     # Collect all model param keys that end with .weight
-    state = model.state_dict()
+    state = base_model.state_dict()
     undo_deltas: Dict[str, torch.Tensor] = {}
 
     for model_key, model_weight in state.items():
@@ -186,7 +201,7 @@ def apply_lora_to_model(
                 state[param_key] = state[param_key] + delta.to(
                     state[param_key].device, state[param_key].dtype
                 )
-        model.load_state_dict(state)
+        base_model.load_state_dict(state)
 
     # Move deltas to match param devices for efficient undo
     for key in undo_deltas:
@@ -208,13 +223,14 @@ def undo_lora_on_model(
         return
 
     logger.debug("Undoing LoRA on model (%d keys)", len(undo_deltas))
+    base_model = _unwrap_compiled(model)
     with torch.no_grad():
-        state = model.state_dict()
+        state = base_model.state_dict()
         for param_key, delta in undo_deltas.items():
             state[param_key] = state[param_key] - delta.to(
                 state[param_key].device, state[param_key].dtype
             )
-        model.load_state_dict(state)
+        base_model.load_state_dict(state)
 
 
 # ---------------------------------------------------------------------------
