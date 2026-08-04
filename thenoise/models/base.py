@@ -74,13 +74,13 @@ from PIL import Image
 from safetensors.torch import load_file
 from tqdm import tqdm
 
-from diffuse.upscale import load_upscaler
-from diffuse.utils.lora import apply_lora_to_model, undo_lora_on_model
-from diffuse.vae import load_vae
-from diffuse.postprocess.film_grain import film_grain
-from diffuse.postprocess.nyquist import nyquist_notch
-from diffuse.postprocess.rcas import rcas
-from diffuse.utils.png import build_pnginfo
+from thenoise.upscale import load_upscaler
+from thenoise.utils.lora import apply_lora_to_model, undo_lora_on_model
+from thenoise.vae import load_vae
+from thenoise.postprocess.film_grain import film_grain
+from thenoise.postprocess.nyquist import nyquist_notch
+from thenoise.postprocess.rcas import rcas
+from thenoise.utils.png import build_pnginfo
 
 
 @dataclass

@@ -8,9 +8,9 @@ from typing import List, Optional
 import torch
 from einops import rearrange
 
-from diffuse.dit.krea2 import utils as krea2_utils
-from diffuse.dit.krea2.sampling import encode_prompts, prepare, roundup, timesteps
-from diffuse.models.base import Conditioning, DiffusionModel, Step
+from thenoise.dit.krea2 import utils as krea2_utils
+from thenoise.dit.krea2.sampling import encode_prompts, prepare, roundup, timesteps
+from thenoise.models.base import Conditioning, DiffusionModel, Step
 
 logger = logging.getLogger(__name__)
 

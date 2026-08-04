@@ -25,7 +25,7 @@ from transformers import (
     Qwen3VLForConditionalGeneration,
 )
 
-from diffuse.utils.safetensors import load_split_weights
+from thenoise.utils.safetensors import load_split_weights
 
 logger = logging.getLogger(__name__)
 

@@ -25,13 +25,13 @@ class BlockSwapConfig:
 class ModelOffloader:
     def __init__(self, *args: Any, **kwargs: Any):  # pragma: no cover - never called
         raise NotImplementedError(
-            "Block swap is not supported in the diffuse-rocm engine (128GB unified RAM makes "
+            "Block swap is not supported in the thenoise engine (128GB unified RAM makes "
             "it unnecessary)."
         )
 
 
 def create_offloader(*args, **kwargs):  # pragma: no cover - never called
     raise NotImplementedError(
-        "Block swap is not supported in the diffuse-rocm engine (128GB unified RAM makes "
+        "Block swap is not supported in the thenoise engine (128GB unified RAM makes "
         "it unnecessary)."
     )

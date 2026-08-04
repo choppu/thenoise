@@ -45,7 +45,7 @@ class Text2ImageRequest(BaseModel):
 
 
 def create_app(runtime) -> FastAPI:
-    app = FastAPI(title="diffuse-rocm", version="0.1.0")
+    app = FastAPI(title="thenoise", version="0.1.0")
 
     @app.get("/", response_class=HTMLResponse)
     def ui():

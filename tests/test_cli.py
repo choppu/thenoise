@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import pytest
 
-from diffuse.cli import build_parser
+from thenoise.cli import build_parser
 
 
 def test_parse_lora_spec_no_suffix():
     """_parse_lora_spec auto-appends .safetensors when no extension."""
     # We test the logic directly without instantiating a model
-    from diffuse.models.base import DiffusionModel
+    from thenoise.models.base import DiffusionModel
     # Create a minimal concrete subclass for testing
     class _TestModel(DiffusionModel):
         name = "test"
@@ -45,7 +45,7 @@ def test_parse_lora_spec_no_suffix():
 def test_resolve_lora_path_blocks_traversal():
     """_resolve_lora_path rejects .. escape attempts."""
     import tempfile, os
-    from diffuse.models.base import DiffusionModel
+    from thenoise.models.base import DiffusionModel
 
     class _TestModel(DiffusionModel):
         name = "test"
@@ -79,7 +79,7 @@ def test_resolve_lora_path_blocks_traversal():
 
 def test_lora_spec_hash():
     """_make_lora_spec_hash produces consistent hashes."""
-    from diffuse.models.base import DiffusionModel
+    from thenoise.models.base import DiffusionModel
 
     class _TestModel(DiffusionModel):
         name = "test"

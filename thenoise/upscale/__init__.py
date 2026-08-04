@@ -1,4 +1,4 @@
-"""SesquiLSR latent upscaler, vendored for diffuse-rocm.
+"""SesquiLSR latent upscaler, vendored for thenoise.
 
 Both models (Krea2, Anima) use the shared Qwen-Image VAE, so a single Wan21
 upscaler covers the whole repo: it operates on the 16-channel, z-score-normalized

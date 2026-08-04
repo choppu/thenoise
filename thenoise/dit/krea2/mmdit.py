@@ -17,8 +17,8 @@ import torch.utils.checkpoint
 from einops import rearrange
 from torch import Tensor
 
-from diffuse.utils.attention import AttentionParams, attention as common_attention
-from diffuse.utils.offloading import BlockSwapConfig, create_offloader
+from thenoise.utils.attention import AttentionParams, attention as common_attention
+from thenoise.utils.offloading import BlockSwapConfig, create_offloader
 
 
 def rope(pos: Tensor, dim: int, theta: float = 1e4, ntk: float = 1.0) -> Tensor:

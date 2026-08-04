@@ -28,9 +28,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from diffuse.utils.safetensors import load_safetensors
+from thenoise.utils.safetensors import load_safetensors
 
-from diffuse.utils.setup_logging import setup_logging
+from thenoise.utils.setup_logging import setup_logging
 
 setup_logging()
 import logging

@@ -5,16 +5,16 @@ from typing import Optional, Union
 
 import torch
 
-from diffuse.dit.krea2.encoder import (
+from thenoise.dit.krea2.encoder import (
     QWEN3_VL_4B_INSTRUCT_REPO_ID,
     Qwen3VLConditioner,
     TextEncoderConfig,
     load_qwen3_vl_conditioner,
 )
-from diffuse.dit.krea2.mmdit import SingleMMDiTConfig, SingleStreamDiT
+from thenoise.dit.krea2.mmdit import SingleMMDiTConfig, SingleStreamDiT
 # fp8 dropped (bf16-only engine)
-from diffuse.utils.lora import load_safetensors_with_lora
-from diffuse.utils.safetensors import load_safetensors
+from thenoise.utils.lora import load_safetensors_with_lora
+from thenoise.utils.safetensors import load_safetensors
 
 logger = logging.getLogger(__name__)
 

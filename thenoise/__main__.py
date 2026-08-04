@@ -22,7 +22,7 @@ def _serve(args) -> None:
     import uvicorn
 
     app = create_app(runtime)
-    print(f"diffuse-rocm serving model '{runtime.model_name}' on {settings.device}")
+    print(f"thenoise serving model '{runtime.model_name}' on {settings.device}")
     uvicorn.run(app, host=settings.host, port=settings.port)
 
 

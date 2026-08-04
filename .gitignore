@@ -12,7 +12,7 @@ build/
 *.safetensors
 
 # Vendored Sesqui upscaler weights ARE committed (bf16, ~6MB).
-!diffuse/upscale/weights/*.safetensors
+!thenoise/upscale/weights/*.safetensors
 
 # Misc
 .DS_Store

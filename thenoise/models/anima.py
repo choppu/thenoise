@@ -6,10 +6,10 @@ from typing import List, Optional
 
 import torch
 
-from diffuse.dit.anima import utils as anima_utils
-from diffuse.dit.anima import sampling as anima_sampling
-from diffuse.dit.anima.strategy import AnimaTextEncodingStrategy, AnimaTokenizeStrategy
-from diffuse.models.base import Conditioning, DiffusionModel, Step
+from thenoise.dit.anima import utils as anima_utils
+from thenoise.dit.anima import sampling as anima_sampling
+from thenoise.dit.anima.strategy import AnimaTextEncodingStrategy, AnimaTokenizeStrategy
+from thenoise.models.base import Conditioning, DiffusionModel, Step
 
 logger = logging.getLogger(__name__)
 

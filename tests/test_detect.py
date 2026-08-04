@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from diffuse.models import AnimaModel, Krea2Model, resolve
+from thenoise.models import AnimaModel, Krea2Model, resolve
 
 
 class _FakeHandle:

@@ -4,7 +4,7 @@ Sesqui upscalers are trained on *raw* VAE latents. A ``LatentFormatAdaptor``
 converts between a pipeline's external latent space (what the diffusion model
 passes around) and the canonical raw VAE latent space.
 
-diffuse-rocm's canonical latent is the *normalized* (per-channel z-score) latent
+thenoise's canonical latent is the *normalized* (per-channel z-score) latent
 ``(VAE_raw - mean) / std``, exactly the Qwen-Image / Wan21 / Anima latent format
 that ``make_wan21`` expects.
 
@@ -86,7 +86,7 @@ def make_wan21(
 ) -> LatentFormatAdaptor:
     """Wan21 / Anima / QwenImage — per-channel z-score.
 
-    Matches diffuse-rocm's canonical latent format (the Qwen-Image VAE applies
+    Matches thenoise's canonical latent format (the Qwen-Image VAE applies
     ``(z - mean) / std`` on encode and ``z / std + mean`` on decode).
     """
     if latents_mean is None:

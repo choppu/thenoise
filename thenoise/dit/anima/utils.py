@@ -8,10 +8,10 @@ from accelerate.utils import set_module_tensor_to_device  # kept for potential f
 from accelerate import init_empty_weights
 
 # fp8 dropped (bf16-only engine)
-from diffuse.utils.lora import load_safetensors_with_lora
-from diffuse.dit.anima import models as anima_models
-from diffuse.utils.safetensors import WeightTransformHooks
-from diffuse.utils.setup_logging import setup_logging
+from thenoise.utils.lora import load_safetensors_with_lora
+from thenoise.dit.anima import models as anima_models
+from thenoise.utils.safetensors import WeightTransformHooks
+from thenoise.utils.setup_logging import setup_logging
 
 setup_logging()
 import logging

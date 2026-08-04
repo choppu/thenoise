@@ -1,5 +1,5 @@
 # Anima Strategy Classes
-# PRUNED for the diffuse-rocm engine: only the inference strategies
+# PRUNED for the thenoise engine: only the inference strategies
 # (tokenize + text encode) are kept. The caching strategies and their
 # training-only dependencies (accelerator_setup, numpy, VAE) are dropped.
 
@@ -8,9 +8,9 @@ from typing import Any, List, Optional, Tuple, Union
 
 import torch
 
-from diffuse.dit.anima import utils as anima_utils
-from diffuse.dit.anima.strategy_base import TextEncodingStrategy, TokenizeStrategy
-from diffuse.utils.setup_logging import setup_logging
+from thenoise.dit.anima import utils as anima_utils
+from thenoise.dit.anima.strategy_base import TextEncodingStrategy, TokenizeStrategy
+from thenoise.utils.setup_logging import setup_logging
 
 setup_logging()
 import logging

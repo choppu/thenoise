@@ -3,17 +3,17 @@ import re
 from typing import Dict, List, Optional, Tuple, Union
 import torch
 from tqdm import tqdm
-from diffuse.utils.device import synchronize_device
+from thenoise.utils.device import synchronize_device
 # fp8 dropped: bf16-only engine
 
-from diffuse.utils.safetensors import MemoryEfficientSafeOpen, TensorWeightAdapter, WeightTransformHooks, get_split_weight_filenames
+from thenoise.utils.safetensors import MemoryEfficientSafeOpen, TensorWeightAdapter, WeightTransformHooks, get_split_weight_filenames
 
 # NOTE (pruned for the focused engine): upstream merged LoHa/LoKr LoRAs via the
 # `networks` package, which pulls in the whole sd-scripts LoRA/training stack. That
 # package is not vendored; only standard LoRA (lora_down/lora_up) is merged here, and
 # LoHa/LoKr raise NotImplementedError in the merge path.
 
-from diffuse.utils.setup_logging import setup_logging
+from thenoise.utils.setup_logging import setup_logging
 
 setup_logging()
 import logging

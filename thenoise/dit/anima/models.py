@@ -13,8 +13,8 @@ import torch.nn.functional as F
 
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
-from diffuse.utils import attention
-from diffuse.utils.offloading import BlockSwapConfig, ModelOffloader
+from thenoise.utils import attention
+from thenoise.utils.offloading import BlockSwapConfig, ModelOffloader
 
 
 def to_device(x, device):
@@ -125,7 +125,7 @@ def unsloth_checkpoint(function, *args):
     return UnslothOffloadedGradientCheckpointer.apply(function, *args)
 
 
-from diffuse.utils.setup_logging import setup_logging
+from thenoise.utils.setup_logging import setup_logging
 
 setup_logging()
 import logging

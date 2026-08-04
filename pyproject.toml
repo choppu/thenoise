@@ -3,7 +3,7 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "diffuse-rocm"
+name = "thenoise"
 version = "0.1.0"
 description = "Focused diffusion inference engine for ROCm (Strix Halo / gfx1151)"
 requires-python = ">=3.10"
@@ -33,22 +33,22 @@ dev = ["pytest", "httpx"]
 
 [tool.setuptools]
 packages = [
-    "diffuse",
-    "diffuse.models",
-    "diffuse.dit",
-    "diffuse.dit.krea2",
-    "diffuse.dit.anima",
-    "diffuse.vae",
-    "diffuse.upscale",
-    "diffuse.utils",
-    "diffuse.postprocess",
-    "diffuse.ui",
+    "thenoise",
+    "thenoise.models",
+    "thenoise.dit",
+    "thenoise.dit.krea2",
+    "thenoise.dit.anima",
+    "thenoise.vae",
+    "thenoise.upscale",
+    "thenoise.utils",
+    "thenoise.postprocess",
+    "thenoise.ui",
 ]
 
 [tool.setuptools.package-data]
 # Tokenizer configs used by the Anima text encoder (loaded via __file__).
-"diffuse.dit.anima" = ["configs/**/*"]
+"thenoise.dit.anima" = ["configs/**/*"]
 # Committed Sesqui latent upscaler weights (bf16, ~6MB).
-"diffuse.upscale" = ["weights/**/*"]
+"thenoise.upscale" = ["weights/**/*"]
 # Web UI served at /
-"diffuse.ui" = ["*.html"]
+"thenoise.ui" = ["*.html"]

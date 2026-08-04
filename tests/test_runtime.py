@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import types
 
-from diffuse.runtime import Settings, ModelPaths, NotLoadedError, Runtime
+from thenoise.runtime import Settings, ModelPaths, NotLoadedError, Runtime
 
 
 def _runtime_with_fake_model(monkeypatch):
-    import diffuse.models as dm
+    import thenoise.models as dm
 
     constructed = []
 

@@ -1,4 +1,4 @@
-# diffuse-rocm
+# TheNoise
 
 A focused diffusion inference engine for **ROCm**, targeting a Strix Halo APU
 (**gfx1151**, RDNA 3.5, native BF16/FP16, 128GB unified RAM).
@@ -29,10 +29,10 @@ LoRA merge, attention) are implemented once.
 ## Layout
 
 ```
-diffuse/              server package (FastAPI app, runtime, adapters)
+thenoise/              server package (FastAPI app, runtime, adapters)
   runtime.py          single-model runtime (loads one model, swaps on reload)
   api.py              generic FastAPI /text2image surface
-  __main__.py + cli.py  CLI entrypoints: serve / generate (python -m diffuse)
+  __main__.py + cli.py  CLI entrypoints: serve / generate (python -m thenoise)
   models/             model adapters (DiffusionModel ABC + catalog + detect)
     base.py           detect/load/generate interface
     krea2.py / anima.py
@@ -65,7 +65,7 @@ detected automatically from the `--dit` checkpoint, and inference is bf16-only.
 Serve one model over HTTP:
 
 ```bash
-python -m diffuse serve \
+python -m thenoise serve \
   --dit ./models/krea2/diffusion_models/krea2_turbo_bf16.safetensors \
   --vae ./models/krea2/vae/qwen_image_vae.safetensors \
   --text-encoder ./models/krea2/text_encoders/qwen3vl_4b_bf16.safetensors \
@@ -75,7 +75,7 @@ python -m diffuse serve \
 Generate a single image without the server:
 
 ```bash
-python -m diffuse generate \
+python -m thenoise generate \
   --dit ./models/anima/split_files/diffusion_models/anima-turbo-v1.0.safetensors \
   --vae ./models/anima/split_files/vae/qwen_image_vae.safetensors \
   --text-encoder ./models/anima/split_files/text_encoders/qwen_3_06b_base.safetensors \
@@ -110,11 +110,11 @@ curl -s localhost:8000/text2image \
 
 ## Codebase notes
 
-- **Shared, model-agnostic pieces are implemented once** (`diffuse/vae`, `diffuse/utils`):
+- **Shared, model-agnostic pieces are implemented once** (`thenoise/vae`, `thenoise/utils`):
   the Qwen-Image VAE (same for both models), the safetensors loader (with `rename_hook`
   for Anima), the LoRA merge, the attention backend (GQA-aware, serves both models),
   and device helpers.
-- **Per-model compute lives in `diffuse/dit/{krea2,anima}`** so each can be tuned
+- **Per-model compute lives in `thenoise/dit/{krea2,anima}`** so each can be tuned
   independently (e.g. Krea2's GQA attention vs Anima's strategies).
 - **fp8 and block-swap are dropped** (bf16-only; 128GB unified RAM makes block swap
   pointless). Their code paths, monkey-patches and offloader implementations are removed.
@@ -122,7 +122,7 @@ curl -s localhost:8000/text2image \
   LoHa/LoKr are not supported (the upstream `networks/` package is not vendored) and
   raise `NotImplementedError` in the merge path.
 - The Anima tokenizer configs (`qwen3_06b`, `t5_old`) are packaged as data under
-  `diffuse/dit/anima/configs/` so the wheel is self-contained.
+  `thenoise/dit/anima/configs/` so the wheel is self-contained.
 
 ## Future work
 

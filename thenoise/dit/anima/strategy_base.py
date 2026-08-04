@@ -9,7 +9,7 @@ import torch
 from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjection
 
 
-from diffuse.utils.setup_logging import setup_logging
+from thenoise.utils.setup_logging import setup_logging
 import logging
 
 logger = logging.getLogger(__name__)

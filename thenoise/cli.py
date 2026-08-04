@@ -1,4 +1,4 @@
-"""Command-line interface for diffuse-rocm.
+"""Command-line interface for thenoise.
 
 Two subcommands share the same checkpoint flags:
   * ``serve``    run the FastAPI HTTP server with a single loaded model
@@ -26,7 +26,7 @@ def _add_model_paths(p: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="diffuse")
+    parser = argparse.ArgumentParser(prog="thenoise")
     sub = parser.add_subparsers(dest="command", required=True)
 
     # serve

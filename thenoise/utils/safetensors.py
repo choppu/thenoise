@@ -9,7 +9,7 @@ from typing import Dict, Any, Union, Optional
 
 from safetensors.torch import load_file
 
-from diffuse.utils.device import synchronize_device
+from thenoise.utils.device import synchronize_device
 
 
 def mem_eff_save_file(tensors: Dict[str, torch.Tensor], filename: str, metadata: Dict[str, Any] = None):
