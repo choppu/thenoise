@@ -33,7 +33,7 @@ fi
 if ! "$VENV_DIR/bin/python" -c "import torch" &>/dev/null; then
   echo "Installing ROCm torch ..."
   uv pip install \
-    "torch[device-gfx1150]==2.11" \
+    "torch[device-$GFX_ARCH]==2.11" \
     "torchvision[device-$GFX_ARCH]==0.26" \
     --index-url https://repo.amd.com/rocm/whl-multi-arch/
 fi
