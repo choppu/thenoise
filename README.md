@@ -80,7 +80,7 @@ Krea 2, which is larger (~35 GB) but higher quality.
   --dit ./models/anima/split_files/diffusion_models/anima-turbo-v1.0.safetensors \
   --vae ./models/anima/split_files/vae/qwen_image_vae.safetensors \
   --text-encoder ./models/anima/split_files/text_encoders/qwen_3_06b_base.safetensors \
-  --prompt "a fox walking in the snow" \
+  --prompt "a fox walking in the snow" --steps 8 --guidance-scale 1 \
   --out fox.png
 ```
 
@@ -213,7 +213,7 @@ Then open `http://localhost:8000/` for the web UI.
   --dit ./models/anima/split_files/diffusion_models/anima-turbo-v1.0.safetensors \
   --vae ./models/anima/split_files/vae/qwen_image_vae.safetensors \
   --text-encoder ./models/anima/split_files/text_encoders/qwen_3_06b_base.safetensors \
-  --prompt "a fox walking in the snow" \
+  --prompt "a fox walking in the snow" --steps 8 --guidance-scale 1 \
   --out /tmp/fox.png
 ```
 
