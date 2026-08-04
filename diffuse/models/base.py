@@ -499,7 +499,7 @@ class DiffusionModel(ABC):
         if sharpening > 0.0:
             pixels = rcas(pixels, strength=sharpening)
         if film_grain_strength > 0.0:
-            pixels = film_grain(pixels, strength=film_grain_strength)
+            pixels = film_grain(pixels, strength=film_grain_strength/10.0)
         return pixels
 
     @staticmethod
