@@ -256,7 +256,7 @@ class DiffusionModel(ABC):
     def _parse_lora_spec(self, spec: str) -> Tuple[str, float]:
         """Parse a 'filename:weight' spec into (filename, weight).
 
-        Auto-appends .safetensors if the filename has no extension.
+        Auto-appends .safetensors
         """
         if ":" in spec:
             filename, weight_str = spec.rsplit(":", 1)
@@ -265,9 +265,7 @@ class DiffusionModel(ABC):
             filename = spec
             weight = 1.0
 
-        # Auto-append .safetensors if no extension present
-        if "." not in os.path.basename(filename):
-            filename = filename + ".safetensors"
+        filename = filename + ".safetensors"
 
         return filename, weight
 

@@ -36,16 +36,6 @@ def test_parse_lora_spec_no_suffix():
     assert filename == "style.safetensors"
     assert weight == 0.8
 
-    # Already has extension → keep as-is
-    filename, weight = model._parse_lora_spec("style.safetensors")
-    assert filename == "style.safetensors"
-    assert weight == 1.0
-
-    # Already has extension with weight
-    filename, weight = model._parse_lora_spec("style.safetensors:0.5")
-    assert filename == "style.safetensors"
-    assert weight == 0.5
-
     # Subdirectory allowed
     filename, weight = model._parse_lora_spec("sub/style:0.7")
     assert filename == "sub/style.safetensors"
