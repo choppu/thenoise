@@ -190,8 +190,6 @@ def load_qwen3_text_encoder(
     import transformers
     from transformers import AutoTokenizer
 
-    logger.info(f"Loading Qwen3 text encoder from {qwen3_path}")
-
     if os.path.isdir(qwen3_path):
         # Directory with full model
         tokenizer = AutoTokenizer.from_pretrained(qwen3_path, local_files_only=True)

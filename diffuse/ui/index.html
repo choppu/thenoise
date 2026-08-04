@@ -13,7 +13,7 @@
   }
   /* sidebar form */
   .sidebar {
-    width: 340px; min-width: 340px;
+    width: 500px; min-width: 500px;
     background: #16213e; padding: 1.25rem;
     overflow-y: auto; display: flex; flex-direction: column; gap: .75rem;
     border-right: 1px solid #0f3460;
@@ -74,8 +74,8 @@
 
   <div class="section-label">Size</div>
   <div class="row-4">
-    <label>Width <input type="number" id="width" placeholder="auto"></label>
-    <label>Height <input type="number" id="height" placeholder="auto"></label>
+    <label>Width <input type="number" id="width" placeholder="auto" value="1024""></label>
+    <label>Height <input type="number" id="height" placeholder="auto" value="1024"></label>
   </div>
 
   <div class="section-label">Sampling</div>
@@ -102,7 +102,7 @@
     <span style="display:flex;justify-content:space-between">
       Film grain <span class="range-val" id="film_grain_val">0.0</span>
     </span>
-    <input type="range" id="film_grain" min="0" max="5" step="0.1" value="0">
+    <input type="range" id="film_grain" min="0" max="1" step="0.1" value="0">
   </label>
 
   <label>
