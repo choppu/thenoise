@@ -13,7 +13,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -38,6 +38,7 @@ class Text2ImageRequest(BaseModel):
     qwen_vae_enhance: bool = False
     film_grain: float = 0.0
     sharpening: float = 0.0
+    lora_specs: Optional[List[str]] = None  # ["filename.safetensors:0.8", ...]
 
 
 def _to_base64_png(image: Image.Image) -> str:
@@ -73,6 +74,7 @@ def create_app(runtime) -> FastAPI:
                 qwen_vae_enhance=req.qwen_vae_enhance,
                 film_grain=req.film_grain,
                 sharpening=req.sharpening,
+                lora_specs=req.lora_specs,
             )
         except Exception as e:  # surface generation errors cleanly
             logger.exception("generation failed")

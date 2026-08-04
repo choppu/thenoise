@@ -34,20 +34,33 @@ Post-processing runs on the decoded pixels as an fp32 GPU tensor (bf16's ~7-bit
 mantissa causes banding in image filters); the tensor is only cast to uint8 and
 moved to CPU inside ``_to_pil``. Metadata that must live on the final PNG is a
 separate concern and is added later, after the PIL conversion.
+
+LoRA switching
+---------------
+LoRAs are applied per-request via ``switch_loras()``. The base model is loaded
+without any LoRA baked in. At request time, the requested LoRA(s) are loaded
+(on-demand, cached while active) and their deltas are added to the model's
+parameters. When the next request asks for different LoRAs, the old deltas are
+subtracted (undo) before applying the new ones. This avoids reloading the entire
+model from disk.
 """
 from __future__ import annotations
 
+import glob
+import os
 import random
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from PIL import Image
+from safetensors.torch import load_file
 from tqdm import tqdm
 
 from diffuse.upscale import load_upscaler
+from diffuse.utils.lora import apply_lora_to_model, undo_lora_on_model
 from diffuse.vae import load_vae
 from diffuse.postprocess.film_grain import film_grain
 from diffuse.postprocess.nyquist import nyquist_notch
@@ -113,17 +126,20 @@ class DiffusionModel(ABC):
         text_encoder_path: str,
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
-        lora_weights: Optional[list] = None,
-        lora_multipliers: Optional[list] = None,
+        lora_dir: Optional[str] = None,
     ):
         self.device = device
         self.dtype = dtype
         self.dit_path = dit_path
         self.vae_path = vae_path
         self.text_encoder_path = text_encoder_path
-        self.lora_weights = lora_weights
-        self.lora_multipliers = lora_multipliers
+        self.lora_dir = lora_dir
         self._lock = threading.Lock()
+
+        # LoRA state: on-demand cache + undo deltas for clean switching
+        self._lora_cache: Dict[str, Tuple[Dict[str, torch.Tensor], float]] = {}
+        self._undo_deltas: Dict[str, torch.Tensor] = {}
+        self._active_lora_spec: Optional[str] = None
 
         # Lazy Sesqui latent upscaler (only loaded if ``upscale`` is requested).
         self._upscaler = None
@@ -203,6 +219,153 @@ class DiffusionModel(ABC):
         """Return the effective (width, height). Override to round/validate."""
         return width, height
 
+    def _apply_loras_for_generation(
+        self, lora_specs: Optional[List[str]]
+    ) -> None:
+        """Apply LoRAs before generation. Override in subclasses to pass the DiT.
+
+        The base implementation is a no-op; subclasses call ``self.switch_loras(
+        lora_specs, self.dit)`` (or equivalent) to target the actual model module.
+        """
+        pass
+
+    # --------------------------------------------------------------- LoRA
+    def _parse_lora_spec(self, spec: str) -> Tuple[str, float]:
+        """Parse a 'filename:weight' spec into (filename, weight).
+
+        Auto-appends .safetensors if the filename has no extension.
+        """
+        if ":" in spec:
+            filename, weight_str = spec.rsplit(":", 1)
+            weight = float(weight_str)
+        else:
+            filename = spec
+            weight = 1.0
+
+        # Auto-append .safetensors if no extension present
+        if "." not in os.path.basename(filename):
+            filename = filename + ".safetensors"
+
+        return filename, weight
+
+    def _resolve_lora_path(self, filename: str) -> str:
+        """Resolve a LoRA filename to an absolute path, guarded against traversal.
+
+        Subdirectories are allowed, but .. components that would escape lora_dir
+        raise ValueError.
+        """
+        if not self.lora_dir:
+            raise ValueError("lora_dir is not set")
+
+        base = os.path.realpath(self.lora_dir)
+        candidate = os.path.realpath(os.path.join(self.lora_dir, filename))
+
+        if not candidate.startswith(base + os.sep) and candidate != base:
+            raise ValueError(
+                f"LoRA path escapes lora_dir: {filename!r} "
+                f"(resolved to {candidate}, must stay under {base})"
+            )
+
+        return candidate
+
+    def _get_lora_sd(self, filename: str) -> Dict[str, torch.Tensor]:
+        """Load a LoRA state dict, using the cache if available."""
+        filepath = self._resolve_lora_path(filename)
+
+        if filename in self._lora_cache:
+            cached_sd, cached_mtime = self._lora_cache[filename]
+            try:
+                if os.path.getmtime(filepath) == cached_mtime:
+                    return cached_sd
+            except OSError:
+                pass
+            # File changed, evict
+            del self._lora_cache[filename]
+
+        logger = __import__("logging").getLogger(__name__)
+        logger.info("Loading LoRA: %s", filepath)
+        sd = load_file(filepath, device="cpu")
+        mtime = os.path.getmtime(filepath)
+        self._lora_cache[filename] = (sd, mtime)
+        return sd
+
+    def _evict_lora_cache(self, filename: str) -> None:
+        """Remove a LoRA from the cache to free memory."""
+        if filename in self._lora_cache:
+            del self._lora_cache[filename]
+
+    def _make_lora_spec_hash(self, lora_specs: Optional[List[str]]) -> str:
+        """Create a hash string for the current LoRA configuration."""
+        if not lora_specs:
+            return "__none__"
+        return "|".join(sorted(lora_specs))
+
+    def switch_loras(
+        self,
+        lora_specs: Optional[List[str]],
+        dit: torch.nn.Module,
+    ) -> None:
+        """Switch active LoRAs on the DiT module (in-place, under the lock).
+
+        Args:
+            lora_specs: list of "filename:weight" strings, or None for base model.
+            dit: the DiT model module whose parameters will be modified.
+
+        Skips the switch if the requested config matches the current one.
+        """
+        new_spec = self._make_lora_spec_hash(lora_specs)
+        if new_spec == self._active_lora_spec:
+            return  # no-op: same LoRA config
+
+        logger = __import__("logging").getLogger(__name__)
+
+        # Undo any currently active LoRA
+        if self._undo_deltas:
+            logger.debug("Undoing previous LoRA (%d keys)", len(self._undo_deltas))
+            undo_lora_on_model(dit, self._undo_deltas, torch.device(self.device))
+            self._undo_deltas = {}
+
+        # Evict LoRAs from cache that are no longer needed
+        active_filenames = set()
+        if lora_specs:
+            for spec in lora_specs:
+                filename, _ = self._parse_lora_spec(spec)
+                active_filenames.add(filename)
+            # Evict inactive LoRAs
+            for cached_name in list(self._lora_cache.keys()):
+                if cached_name not in active_filenames:
+                    self._evict_lora_cache(cached_name)
+
+        # Apply new LoRAs
+        if lora_specs and self.lora_dir is not None:
+            lora_sds = []
+            multipliers = []
+            for spec in lora_specs:
+                filename, weight = self._parse_lora_spec(spec)
+                lora_sds.append(self._get_lora_sd(filename))
+                multipliers.append(weight)
+
+            self._undo_deltas = apply_lora_to_model(
+                dit, lora_sds, multipliers, torch.device(self.device)
+            )
+            active_names = ", ".join(
+                self._parse_lora_spec(s)[0] for s in lora_specs
+            )
+            logger.info("Applied LoRA(s): %s", active_names)
+        else:
+            logger.debug("Using base model (no LoRA)")
+
+        self._active_lora_spec = new_spec
+
+    def list_loras(self) -> List[str]:
+        """List available LoRA filenames in the LoRA directory."""
+        if not self.lora_dir:
+            return []
+        return [
+            os.path.basename(p)
+            for p in sorted(glob.glob(os.path.join(self.lora_dir, "*.safetensors")))
+        ]
+
     def percent_to_sigma(self, percent: float) -> float:
         """Map a percent (0..1) to a sigma, used by the sampler's SNR offset.
 
@@ -227,6 +390,7 @@ class DiffusionModel(ABC):
         qwen_vae_enhance: bool = False,
         film_grain: float = 0.0,
         sharpening: float = 0.0,
+        lora_specs: Optional[List[str]] = None,
     ) -> Image.Image:
         """Encode -> denoise -> decode -> postprocess. Returns a single PIL image."""
         width = width or self.DEFAULT_WIDTH
@@ -240,6 +404,8 @@ class DiffusionModel(ABC):
         width, height = self.resolve_size(width, height)
 
         with self._lock:
+            self._apply_loras_for_generation(lora_specs)
+
             if seed is None:
                 seed = random.randint(0, 2**32 - 1)
 

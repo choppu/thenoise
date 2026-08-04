@@ -3,11 +3,10 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Optional
+from typing import List, Optional
 
 import torch
 from einops import rearrange
-from safetensors.torch import load_file
 
 from diffuse.dit.krea2 import utils as krea2_utils
 from diffuse.dit.krea2.sampling import encode_prompts, prepare, roundup, timesteps
@@ -48,8 +47,7 @@ class Krea2Model(DiffusionModel):
         text_encoder_path: str,
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
-        lora_weights: Optional[list] = None,
-        lora_multipliers: Optional[list] = None,
+        lora_dir: Optional[str] = None,
     ):
         super().__init__(
             dit_path=dit_path,
@@ -57,13 +55,8 @@ class Krea2Model(DiffusionModel):
             text_encoder_path=text_encoder_path,
             device=device,
             dtype=dtype,
-            lora_weights=lora_weights,
-            lora_multipliers=lora_multipliers,
+            lora_dir=lora_dir,
         )
-
-        # LoRA state dicts are merged into the base weights at load time.
-        lora_sds = [load_file(p) for p in (lora_weights or [])]
-        mults = list(lora_multipliers) if lora_multipliers else [1.0] * len(lora_sds)
 
         logger.info("Loading Krea 2 DiT from %s", dit_path)
         self.dit = krea2_utils.load_krea2_dit(
@@ -71,8 +64,6 @@ class Krea2Model(DiffusionModel):
             device=device,
             dtype=dtype,
             attn_mode="torch",  # SDPA
-            lora_weights=lora_sds or None,
-            lora_multipliers=mults or None,
         )
         self.dit.eval().requires_grad_(False)
 
@@ -214,3 +205,9 @@ class Krea2Model(DiffusionModel):
         t = 1.0 - percent
         mu = self.DEFAULT_MU
         return math.exp(mu) / (math.exp(mu) + (1.0 / t - 1.0))
+
+    def _apply_loras_for_generation(
+        self, lora_specs: Optional[List[str]]
+    ) -> None:
+        """Apply LoRAs to the Krea2 DiT before generation."""
+        self.switch_loras(lora_specs, self.dit)

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import gc
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -31,8 +31,7 @@ class ModelPaths:
     dit_path: str
     vae_path: str
     text_encoder_path: str
-    lora_weights: list = field(default_factory=list)
-    lora_multipliers: list = field(default_factory=list)
+    lora_dir: str = ""
 
 
 class NotLoadedError(RuntimeError):
@@ -57,8 +56,7 @@ class Runtime:
             text_encoder_path=paths.text_encoder_path,
             device=self._settings.device,
         )
-        kwargs["lora_weights"] = paths.lora_weights or None
-        kwargs["lora_multipliers"] = paths.lora_multipliers or None
+        kwargs["lora_dir"] = paths.lora_dir or None
 
         self._unload()  # swap: only one model resident at a time
         logger.info("Loading model '%s'", name)

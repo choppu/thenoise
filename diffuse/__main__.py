@@ -14,8 +14,7 @@ def _serve(args) -> None:
             dit_path=args.dit,
             vae_path=args.vae,
             text_encoder_path=args.text_encoder,
-            lora_weights=args.lora,
-            lora_multipliers=[float(m) for m in (args.lora_multiplier or [])],
+            lora_dir=args.lora_dir,
         ),
     )
 

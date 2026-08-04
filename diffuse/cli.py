@@ -20,10 +20,9 @@ def _add_model_paths(p: argparse.ArgumentParser) -> None:
                    help="VAE checkpoint (.safetensors)")
     p.add_argument("--text-encoder", required=True, metavar="PATH",
                    help="text encoder checkpoint (.safetensors)")
-    p.add_argument("--lora", action="append", default=[], metavar="PATH",
-                   help="LoRA safetensor to merge at load time (repeatable)")
-    p.add_argument("--lora-multiplier", action="append", default=[], metavar="FLOAT",
-                   help="LoRA multiplier (repeatable, pairs with --lora)")
+    p.add_argument("--lora-dir", default="", metavar="PATH",
+                   help="directory containing LoRA .safetensors files "
+                        "(subdirectories allowed)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -51,6 +50,10 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--guidance-scale", type=float)
     gen.add_argument("--seed", type=int)
     gen.add_argument("--out", default="out.png")
+    gen.add_argument("--lora", action="append", default=[],
+                     metavar="FILE[:WEIGHT]",
+                     help="LoRA to apply (format: 'style:0.8' or 'sub/style', "
+                          ".safetensors auto-appended, repeatable)")
     gen.add_argument("--upscale", action="store_true",
                      help="upscale the latent 2x in latent space (SesquiLSR) and "
                           "run a low-strength refine denoise before decoding")

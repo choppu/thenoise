@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import List, Optional
 
 import torch
-from safetensors.torch import load_file
 
 from diffuse.dit.anima import utils as anima_utils
 from diffuse.dit.anima import sampling as anima_sampling
@@ -42,8 +41,7 @@ class AnimaModel(DiffusionModel):
         text_encoder_path: str,
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
-        lora_weights: Optional[list] = None,
-        lora_multipliers: Optional[list] = None,
+        lora_dir: Optional[str] = None,
     ):
         super().__init__(
             dit_path=dit_path,
@@ -51,15 +49,10 @@ class AnimaModel(DiffusionModel):
             text_encoder_path=text_encoder_path,
             device=device,
             dtype=dtype,
-            lora_weights=lora_weights,
-            lora_multipliers=lora_multipliers,
+            lora_dir=lora_dir,
         )
 
-        # LoRA state dicts are merged into the base weights at load time.
-        lora_sds = [load_file(p) for p in (lora_weights or [])]
-        mults = list(lora_multipliers) if lora_multipliers else [1.0] * len(lora_sds)
-
-        # DiT (bf16, SDPA attention).
+        # DiT (bf16, SDPA attention) — loaded WITHOUT LoRA baked in.
         logger.info("Loading Anima DiT from %s", dit_path)
         self.dit = anima_utils.load_anima_model(
             device,
@@ -69,8 +62,6 @@ class AnimaModel(DiffusionModel):
             loading_device=device,
             dit_weight_dtype=dtype,
             fp8_scaled=False,
-            lora_weights_list=lora_sds or None,
-            lora_multipliers=mults or None,
         )
         self.dit.eval().requires_grad_(False)
 
@@ -192,3 +183,9 @@ class AnimaModel(DiffusionModel):
         t = 1.0 - percent
         shift = self.DEFAULT_FLOW_SHIFT
         return (shift * t) / (1.0 + (shift - 1.0) * t)
+
+    def _apply_loras_for_generation(
+        self, lora_specs: Optional[List[str]]
+    ) -> None:
+        """Apply LoRAs to the Anima DiT before generation."""
+        self.switch_loras(lora_specs, self.dit)

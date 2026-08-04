@@ -6,19 +6,123 @@ import pytest
 from diffuse.cli import build_parser
 
 
+def test_parse_lora_spec_no_suffix():
+    """_parse_lora_spec auto-appends .safetensors when no extension."""
+    # We test the logic directly without instantiating a model
+    from diffuse.models.base import DiffusionModel
+    # Create a minimal concrete subclass for testing
+    class _TestModel(DiffusionModel):
+        name = "test"
+        @staticmethod
+        def detect(f): return False
+        def encode_prompt(self, prompt, negative_prompt="", *, guidance_scale): pass
+        def init_latents(self, height, width, seed): pass
+        def schedule(self, steps, height, width): pass
+        def denoise_step(self, latents, t, cond, guidance_scale, i): pass
+
+    # Can't fully instantiate (needs VAE), but we can test the pure parsing
+    # by calling the method directly with a mock object
+    import types
+    model = object.__new__(_TestModel)
+    model.lora_dir = "/tmp/loras"
+
+    # No extension → auto-append
+    filename, weight = model._parse_lora_spec("style")
+    assert filename == "style.safetensors"
+    assert weight == 1.0
+
+    # No extension with weight
+    filename, weight = model._parse_lora_spec("style:0.8")
+    assert filename == "style.safetensors"
+    assert weight == 0.8
+
+    # Already has extension → keep as-is
+    filename, weight = model._parse_lora_spec("style.safetensors")
+    assert filename == "style.safetensors"
+    assert weight == 1.0
+
+    # Already has extension with weight
+    filename, weight = model._parse_lora_spec("style.safetensors:0.5")
+    assert filename == "style.safetensors"
+    assert weight == 0.5
+
+    # Subdirectory allowed
+    filename, weight = model._parse_lora_spec("sub/style:0.7")
+    assert filename == "sub/style.safetensors"
+    assert weight == 0.7
+
+
+def test_resolve_lora_path_blocks_traversal():
+    """_resolve_lora_path rejects .. escape attempts."""
+    import tempfile, os
+    from diffuse.models.base import DiffusionModel
+
+    class _TestModel(DiffusionModel):
+        name = "test"
+        @staticmethod
+        def detect(f): return False
+        def encode_prompt(self, prompt, negative_prompt="", *, guidance_scale): pass
+        def init_latents(self, height, width, seed): pass
+        def schedule(self, steps, height, width): pass
+        def denoise_step(self, latents, t, cond, guidance_scale, i): pass
+
+    model = object.__new__(_TestModel)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        model.lora_dir = tmpdir
+
+        # Normal file → OK
+        path = model._resolve_lora_path("style.safetensors")
+        assert path == os.path.join(tmpdir, "style.safetensors")
+
+        # Subdirectory → OK
+        path = model._resolve_lora_path("sub/style.safetensors")
+        assert "sub/style.safetensors" in path
+
+        # .. escape → ValueError
+        with pytest.raises(ValueError, match="escapes lora_dir"):
+            model._resolve_lora_path("../etc/passwd")
+
+        with pytest.raises(ValueError, match="escapes lora_dir"):
+            model._resolve_lora_path("sub/../../etc/passwd")
+
+
+def test_lora_spec_hash():
+    """_make_lora_spec_hash produces consistent hashes."""
+    from diffuse.models.base import DiffusionModel
+
+    class _TestModel(DiffusionModel):
+        name = "test"
+        @staticmethod
+        def detect(f): return False
+        def encode_prompt(self, prompt, negative_prompt="", *, guidance_scale): pass
+        def init_latents(self, height, width, seed): pass
+        def schedule(self, steps, height, width): pass
+        def denoise_step(self, latents, t, cond, guidance_scale, i): pass
+
+    model = object.__new__(_TestModel)
+    model.lora_dir = "/tmp/loras"
+
+    assert model._make_lora_spec_hash(None) == "__none__"
+    assert model._make_lora_spec_hash([]) == "__none__"
+
+    h1 = model._make_lora_spec_hash(["a:0.5", "b:1.0"])
+    h2 = model._make_lora_spec_hash(["b:1.0", "a:0.5"])  # different order
+    assert h1 == h2  # sorted, so same hash
+
+
 def test_cli_serve_parses_model_paths():
     args = build_parser().parse_args([
         "serve",
         "--dit", "dit.safetensors",
         "--vae", "vae.safetensors",
         "--text-encoder", "te.safetensors",
-        "--lora", "lora1.safetensors", "--lora-multiplier", "0.5",
+        "--lora-dir", "/path/to/loras",
         "--host", "0.0.0.0", "--port", "9000", "--device", "hip",
     ])
     assert args.command == "serve"
     assert args.dit == "dit.safetensors"
-    assert args.lora == ["lora1.safetensors"]
-    assert args.lora_multiplier == ["0.5"]
+    assert args.lora_dir == "/path/to/loras"
     assert args.host == "0.0.0.0"
     assert args.port == 9000
     assert args.device == "hip"
@@ -55,6 +159,19 @@ def test_cli_generate_parses():
     assert args.seed == 7
     assert args.out == "x.png"
     assert args.device == "cuda"
+
+
+def test_cli_generate_parses_lora():
+    args = build_parser().parse_args([
+        "generate",
+        "--dit", "d.safetensors",
+        "--vae", "v.safetensors",
+        "--text-encoder", "te.safetensors",
+        "--prompt", "a fox",
+        "--lora", "style.safetensors:0.8",
+        "--lora", "pose.safetensors:1.0",
+    ])
+    assert args.lora == ["style.safetensors:0.8", "pose.safetensors:1.0"]
 
 
 def test_cli_rejects_unknown_flags():

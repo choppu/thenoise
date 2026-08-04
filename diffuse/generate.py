@@ -23,8 +23,7 @@ def run_generate(args) -> None:
             dit_path=args.dit,
             vae_path=args.vae,
             text_encoder_path=args.text_encoder,
-            lora_weights=args.lora,
-            lora_multipliers=[float(m) for m in (args.lora_multiplier or [])],
+            lora_dir=args.lora_dir,
         ),
     )
 
@@ -42,6 +41,7 @@ def run_generate(args) -> None:
         qwen_vae_enhance=args.qwen_vae_enhance,
         film_grain=args.film_grain,
         sharpening=args.sharpening,
+        lora_specs=args.lora or None,
     )
 
     image.save(args.out)
