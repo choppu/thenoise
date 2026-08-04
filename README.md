@@ -19,27 +19,83 @@ Yes, and ComfyUI will always be better than this for the advanced user. This is 
 
 ## Setup
 
-TheNoise ships with a bootstrap script (`thenoise.sh`) that handles everything:
+The steps below are copy-pasteable end to end. They take you from a fresh clone
+to a generated image.
 
-1. Checks that [`uv`](https://github.com/astral-sh/uv) is installed (prints install instructions if not)
-2. Creates a `.venv` with Python 3.13 (if it doesn't exist)
-3. Installs the ROCm build of PyTorch
-4. Installs the project in editable mode
-5. Sets ROCm performance environment variables
-6. Launches the project
+### 1. Install `uv`
 
-**First run** (installs torch + project, then starts):
+[`uv`](https://github.com/astral-sh/uv) is the only prerequisite — it provides
+the Python interpreter and installs every dependency:
 
 ```bash
-./thenoise.sh serve --dit ... --vae ... --text-encoder ...
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.bashrc
 ```
 
-**Subsequent runs** skip the torch install (detected via `import torch`).
-
-By default the script targets `gfx1151` (Strix Halo). Override with the `GFX_ARCH` environment variable:
+### 2. Clone the repo
 
 ```bash
-GFX_ARCH=gfx1150 ./thenoise.sh serve ...
+git clone https://github.com/lemonade-sdk/thenoise.git
+cd thenoise
+```
+
+### 3. Bootstrap the environment
+
+`thenoise.sh` creates the `.venv`, installs the ROCm build of PyTorch, and
+installs the project in editable mode. Running it with `--help` does all of that
+without needing any model weights yet:
+
+```bash
+./thenoise.sh --help
+```
+
+This is the slow step — it downloads several GB of ROCm PyTorch wheels.
+Subsequent runs skip the torch install (detected via `import torch`).
+
+By default the script targets `gfx1151` (Strix Halo). Override with the
+`GFX_ARCH` environment variable, which applies to every `./thenoise.sh`
+invocation:
+
+```bash
+GFX_ARCH=gfx1150 ./thenoise.sh --help
+```
+
+### 4. Download a model
+
+Use the venv's Python — the download scripts need `huggingface_hub`, which is
+installed inside `.venv`, not on your system Python:
+
+```bash
+.venv/bin/python scripts/download_anima.py --out ./models/anima --variant turbo-v1.0
+```
+
+Anima is the smaller of the two supported models (~5.4 GB total), so it is the
+quickest way to get a first image. See [Supported Models](#supported-models) for
+Krea 2, which is larger (~35 GB) but higher quality.
+
+### 5. Generate an image
+
+```bash
+./thenoise.sh generate \
+  --dit ./models/anima/split_files/diffusion_models/anima-turbo-v1.0.safetensors \
+  --vae ./models/anima/split_files/vae/qwen_image_vae.safetensors \
+  --text-encoder ./models/anima/split_files/text_encoders/qwen_3_06b_base.safetensors \
+  --prompt "a fox walking in the snow" --steps 8 --guidance-scale 1 \
+  --out fox.png
+```
+
+The first generation is slow because the DiT is compiled with `torch.compile` —
+see [Performance](#performance). To serve the same model over HTTP with a web UI
+instead, use `serve` (see [CLI](#cli)).
+
+### Developing on TheNoise
+
+`thenoise.sh` installs the runtime dependencies only. To run the test suite,
+also install the dev extras:
+
+```bash
+uv pip install -e ".[dev]"
+.venv/bin/python -m pytest tests/ -q
 ```
 
 ---
@@ -52,28 +108,63 @@ You will also see some warnings on the console, these are normal.
 All subsequent generations use the cached compiled code and run at full speed. 
 Compilation is transparent — no configuration needed.
 
+### Troubleshooting: `InductorError` / `Python.h: No such file or directory`
+
+If the first generation aborts with an `InductorError` wrapping a `gcc` failure
+that references `-I/usr/include/python3.13`, the venv was built against a
+**system** Python 3.13 whose development headers are not installed. Triton
+JIT-compiles its HIP driver module at runtime and needs `Python.h`.
+
+`thenoise.sh` avoids this by passing `--managed-python`, so uv uses its own
+standalone CPython build (which always ships headers). If you have a venv
+created before that fix, rebuild it:
+
+```bash
+rm -rf .venv
+./thenoise.sh --help
+```
+
+Installing your distro's `python3.13-dev` package also works, if you would
+rather keep the system interpreter.
+
 ---
 
 ## Supported Models
 
 At the moment, only Krea 2 and Anima are supported. New models will be added. PRs adding model support are welcome.
 
+All download commands use `.venv/bin/python`, because `huggingface_hub` lives in
+the project venv created by [Setup](#setup) — a bare `python` will not work.
+
+| Model | Download size | Notes |
+|-------|---------------|-------|
+| Anima | ~5.4 GB | 2B params; fastest to download and run |
+| Krea 2 | ~35 GB | Higher quality; much larger text encoder and DiT |
+
 ### Krea 2
 
 Download:
 
 ```bash
-python scripts/download_krea2.py --out ./models/krea2
+.venv/bin/python scripts/download_krea2.py --out ./models/krea2
 ```
+
+This fetches the bf16 Turbo DiT (~26 GB), the VAE (~0.25 GB), and the Qwen3-VL
+text encoder (~8.9 GB). Add `--include-raw` for the non-turbo DiT (another
+~26 GB).
 
 ### Anima
 
-
-Download:
+Download — the `--variant` you pick becomes part of the DiT filename, so use the
+same value in your `--dit` path:
 
 ```bash
-python scripts/download_anima.py --out ./models/anima --variant aesthetic-v1.1
+.venv/bin/python scripts/download_anima.py --out ./models/anima --variant turbo-v1.0
 ```
+
+Available variants include `turbo-v1.0` (fewest steps), `aesthetic-v1.1`, and
+`base-v1.0`. Downloading `--variant aesthetic-v1.1` produces
+`anima-aesthetic-v1.1.safetensors`, not `anima-turbo-v1.0.safetensors`.
 
 ---
 
@@ -93,6 +184,18 @@ The model type is **auto-detected** from the DiT checkpoint — no need to speci
 
 ### Serve a model over HTTP
 
+Anima (matches the model downloaded in [Setup](#setup)):
+
+```bash
+./thenoise.sh serve \
+  --dit ./models/anima/split_files/diffusion_models/anima-turbo-v1.0.safetensors \
+  --vae ./models/anima/split_files/vae/qwen_image_vae.safetensors \
+  --text-encoder ./models/anima/split_files/text_encoders/qwen_3_06b_base.safetensors \
+  --host 127.0.0.1 --port 8000
+```
+
+Krea 2:
+
 ```bash
 ./thenoise.sh serve \
   --dit ./models/krea2/diffusion_models/krea2_turbo_bf16.safetensors \
@@ -101,6 +204,8 @@ The model type is **auto-detected** from the DiT checkpoint — no need to speci
   --host 127.0.0.1 --port 8000
 ```
 
+Then open `http://localhost:8000/` for the web UI.
+
 ### Generate a single image
 
 ```bash
@@ -108,7 +213,7 @@ The model type is **auto-detected** from the DiT checkpoint — no need to speci
   --dit ./models/anima/split_files/diffusion_models/anima-turbo-v1.0.safetensors \
   --vae ./models/anima/split_files/vae/qwen_image_vae.safetensors \
   --text-encoder ./models/anima/split_files/text_encoders/qwen_3_06b_base.safetensors \
-  --prompt "a fox walking in the snow" \
+  --prompt "a fox walking in the snow" --steps 8 --guidance-scale 1 \
   --out /tmp/fox.png
 ```
 
