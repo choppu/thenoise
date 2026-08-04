@@ -6,6 +6,7 @@ They are applied by the base model's ``postprocess`` hook.
 """
 from __future__ import annotations
 
+from .film_grain import film_grain
 from .nyquist import nyquist_notch
 
-__all__ = ["nyquist_notch"]
+__all__ = ["film_grain", "nyquist_notch"]
