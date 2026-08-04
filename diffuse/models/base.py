@@ -51,6 +51,7 @@ from diffuse.upscale import load_upscaler
 from diffuse.vae import load_vae
 from diffuse.postprocess.film_grain import film_grain
 from diffuse.postprocess.nyquist import nyquist_notch
+from diffuse.postprocess.rcas import rcas
 
 
 @dataclass
@@ -225,6 +226,7 @@ class DiffusionModel(ABC):
         sampler: Optional[str] = None,
         qwen_vae_enhance: bool = False,
         film_grain: float = 0.0,
+        sharpening: float = 0.0,
     ) -> Image.Image:
         """Encode -> denoise -> decode -> postprocess. Returns a single PIL image."""
         width = width or self.DEFAULT_WIDTH
@@ -250,7 +252,10 @@ class DiffusionModel(ABC):
                     )
                 pixels = self.decode(latents)                 # fp32 GPU tensor [C,H,W]
                 pixels = self.postprocess(
-                    pixels, qwen_vae_enhance=qwen_vae_enhance, film_grain_strength=film_grain
+                    pixels,
+                    qwen_vae_enhance=qwen_vae_enhance,
+                    film_grain_strength=film_grain,
+                    sharpening=sharpening,
                 )  # tensor filters (hook)
                 return self._to_pil(pixels)                   # final uint8 -> PIL
 
@@ -486,10 +491,13 @@ class DiffusionModel(ABC):
         *,
         qwen_vae_enhance: bool = False,
         film_grain_strength: float = 0.0,
+        sharpening: float = 0.0,
     ) -> torch.Tensor:
         """Tensor post-processing hook. Runs on the fp32 GPU pixels."""
         if qwen_vae_enhance:
             pixels = nyquist_notch(pixels)
+        if sharpening > 0.0:
+            pixels = rcas(pixels, strength=sharpening)
         if film_grain_strength > 0.0:
             pixels = film_grain(pixels, strength=film_grain_strength)
         return pixels

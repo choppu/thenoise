@@ -8,5 +8,6 @@ from __future__ import annotations
 
 from .film_grain import film_grain
 from .nyquist import nyquist_notch
+from .rcas import rcas
 
-__all__ = ["film_grain", "nyquist_notch"]
+__all__ = ["film_grain", "nyquist_notch", "rcas"]

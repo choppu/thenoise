@@ -41,6 +41,7 @@ def run_generate(args) -> None:
         sampler=args.sampler,
         qwen_vae_enhance=args.qwen_vae_enhance,
         film_grain=args.film_grain,
+        sharpening=args.sharpening,
     )
 
     image.save(args.out)

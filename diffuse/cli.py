@@ -61,6 +61,8 @@ def build_parser() -> argparse.ArgumentParser:
                           "(removes 2px grid artifacts)")
     gen.add_argument("--film-grain", type=float, default=0.0,
                      help="film-grain strength 0.0–1.0 (luminance-only, default: 0.0 / off)")
+    gen.add_argument("--sharpening", type=float, default=0.0,
+                     help="RCAS sharpening strength 0.0–1.0 (contrast-adaptive, default: 0.0 / off)")
     gen.add_argument("--device", default="cuda",
                      help="inference device; ROCm aliases cuda -> hip (default: cuda)")
 
