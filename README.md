@@ -6,20 +6,38 @@ Loads one model at a time and generates images from text prompts. Available as a
 
 ---
 
+## Setup
+
+TheNoise ships with a bootstrap script (`thenoise.sh`) that handles everything:
+
+1. Checks that [`uv`](https://github.com/astral-sh/uv) is installed (prints install instructions if not)
+2. Creates a `.venv` with Python 3.13 (if it doesn't exist)
+3. Installs the ROCm build of PyTorch
+4. Installs the project in editable mode
+5. Sets ROCm performance environment variables
+6. Launches the project
+
+**First run** (installs torch + project, then starts):
+
+```bash
+./thenoise.sh serve --dit ... --vae ... --text-encoder ...
+```
+
+**Subsequent runs** skip the torch install (detected via `import torch`).
+
+By default the script targets `gfx1151` (Strix Halo). Override with the `GFX_ARCH` environment variable:
+
+```bash
+GFX_ARCH=gfx1150 ./thenoise.sh serve ...
+```
+
+---
+
 ## Supported Models
 
 ### Krea 2 (K2)
 
 Single-stream MMDiT with Qwen3-VL text encoder and Qwen-Image VAE.
-
-| | |
-|---|---|
-| **Source** | `Comfy-Org/Krea-2` on Hugging Face |
-| **Variants** | Turbo (default), RAW (`--include-raw`) |
-| **Default steps** | 8 |
-| **Default guidance** | 1.0 (CFG disabled by default) |
-| **Default resolution** | 1024 × 1024 |
-| **Size rounding** | Padded up to nearest multiple of 16 |
 
 Download:
 
@@ -29,16 +47,6 @@ python scripts/download_krea2.py --out ./models/krea2
 
 ### Anima
 
-Cosmos-Predict2 2B with Qwen3-0.6B text encoder, T5 cross-attention adapter, and Qwen-Image VAE.
-
-| | |
-|---|---|
-| **Source** | `circlestone-labs/Anima` on Hugging Face |
-| **Variants** | `aesthetic-v1.1` (default), `turbo-v1.0`, `base-v1.0`, `preview3-base`, and more |
-| **Default steps** | 50 |
-| **Default guidance** | 3.5 |
-| **Default resolution** | 1024 × 1024 |
-| **Size rounding** | Must be divisible by 32 |
 
 Download:
 
@@ -65,7 +73,7 @@ The model type is **auto-detected** from the DiT checkpoint — no need to speci
 ### Serve a model over HTTP
 
 ```bash
-python -m thenoise serve \
+./thenoise.sh serve \
   --dit ./models/krea2/diffusion_models/krea2_turbo_bf16.safetensors \
   --vae ./models/krea2/vae/qwen_image_vae.safetensors \
   --text-encoder ./models/krea2/text_encoders/qwen3vl_4b_bf16.safetensors \
@@ -75,7 +83,7 @@ python -m thenoise serve \
 ### Generate a single image
 
 ```bash
-python -m thenoise generate \
+./thenoise.sh generate \
   --dit ./models/anima/split_files/diffusion_models/anima-turbo-v1.0.safetensors \
   --vae ./models/anima/split_files/vae/qwen_image_vae.safetensors \
   --text-encoder ./models/anima/split_files/text_encoders/qwen_3_06b_base.safetensors \
@@ -88,7 +96,7 @@ python -m thenoise generate \
 Place `.safetensors` LoRA files in a directory and point `--lora-dir` at it (both `serve` and `generate`). Then apply LoRAs per-request:
 
 ```bash
-python -m thenoise generate \
+./thenoise.sh generate \
   --dit ... --vae ... --text-encoder ... \
   --lora-dir ./models/loras \
   --prompt "a cyberpunk cityscape" \
@@ -185,29 +193,3 @@ If no model is loaded, `/text2image` returns HTTP 503.
 | `--qwen-vae-enhance` | no | off | Nyquist notch post-filter |
 | `--film-grain` | no | `0.0` | Film grain strength (0.0–10.0) |
 | `--sharpening` | no | `0.0` | RCAS sharpening strength (0.0–1.0) |
-
----
-
-## Model Defaults at a Glance
-
-| Parameter | Krea 2 | Anima |
-|-----------|--------|-------|
-| Default steps | 8 | 50 |
-| Default guidance | 1.0 (no CFG) | 3.5 |
-| Default resolution | 1024 × 1024 | 1024 × 1024 |
-| Default sampler | `er_sde` | `er_sde` |
-| Size constraint | multiple of 16 | multiple of 32 |
-| Precision | BF16 | BF16 |
-
----
-
-## Setup
-
-ROCm PyTorch must be installed in the virtual environment (the ROCm build of `torch` is not managed by `uv` — install it manually per the ROCm documentation). Then:
-
-```bash
-python -m venv .venv && source .venv/bin/activate
-uv pip install -e .
-```
-
-Download one or both models using the scripts above. Everything is configured on the CLI — there is no config file.
