@@ -461,6 +461,10 @@ class DiffusionModel(ABC):
         width, height = self.resolve_size(width, height)
         effective_sampler = sampler or self.SAMPLER
 
+        # seed=-1 is treated as "random" (same as None)
+        if seed is None or seed == -1:
+            seed = random.randint(0, 2**32 - 1)
+
         # --- compute cache keys (pure data, no model access) ---
         prompt_key = self._cache_key_prompt(
             prompt, negative_prompt, guidance_scale
@@ -490,8 +494,6 @@ class DiffusionModel(ABC):
                 latents = self._cache_sampling_value
             else:
                 self._apply_loras_for_generation(lora_specs)
-                if seed is None:
-                    seed = random.randint(0, 2**32 - 1)
                 with torch.no_grad():
                     latents = self._denoise(
                         cond, steps, height, width, seed,
