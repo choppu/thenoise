@@ -44,5 +44,5 @@ def run_generate(args) -> None:
         lora_specs=args.lora or None,
     )
 
-    image.save(args.out)
+    image.save(args.out, pnginfo=getattr(image, "_pnginfo", None))
     logger.info("saved %s (model=%s, seed=%s)", args.out, runtime.model_name, seed)

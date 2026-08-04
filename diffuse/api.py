@@ -47,7 +47,7 @@ class Text2ImageRequest(BaseModel):
 
 def _to_base64_png(image: Image.Image) -> str:
     buf = io.BytesIO()
-    image.save(buf, format="PNG")
+    image.save(buf, format="PNG", pnginfo=getattr(image, "_pnginfo", None))
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 

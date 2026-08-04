@@ -80,6 +80,7 @@ from diffuse.vae import load_vae
 from diffuse.postprocess.film_grain import film_grain
 from diffuse.postprocess.nyquist import nyquist_notch
 from diffuse.postprocess.rcas import rcas
+from diffuse.utils.png import build_pnginfo
 
 
 @dataclass
@@ -522,7 +523,27 @@ class DiffusionModel(ABC):
                 film_grain_strength=film_grain,
                 sharpening=sharpening,
             )
-            return self._to_pil(pixels)
+            image = self._to_pil(pixels)
+
+            # Attach PNG metadata
+            pnginfo = build_pnginfo(
+                model=self.name,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                width=width,
+                height=height,
+                steps=steps,
+                guidance_scale=guidance_scale,
+                seed=seed,
+                upscale=upscale,
+                sampler=effective_sampler,
+                qwen_vae_enhance=qwen_vae_enhance,
+                film_grain=film_grain,
+                sharpening=sharpening,
+                lora_specs=lora_specs,
+            )
+            image._pnginfo = pnginfo
+            return image
 
     def _denoise(
         self,
