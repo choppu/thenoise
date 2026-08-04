@@ -140,6 +140,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
+let currentUrl = null;
 
 // range label updates
 $('film_grain').addEventListener('input', e => $('film_grain_val').textContent = parseFloat(e.target.value).toFixed(2));
@@ -156,6 +157,13 @@ $('generate').addEventListener('click', async () => {
   status.textContent = 'generating…';
   placeholder.style.display = 'none';
   result.style.display = 'none';
+
+  // live timer
+  const start = Date.now();
+  const timer = setInterval(() => {
+    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+    status.textContent = `${elapsed}s`;
+  }, 100);
 
   const body = {
     prompt: $('prompt').value,
@@ -190,16 +198,21 @@ $('generate').addEventListener('click', async () => {
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(err.detail || res.statusText);
+      const err = await res.text();
+      throw new Error(err || res.statusText);
     }
-    const data = await res.json();
-    $('image').src = 'data:image/png;base64,' + data.image;
-    $('meta').textContent = `model: ${data.model}  ·  seed: ${data.seed ?? 'random'}`;
+    const blob = await res.blob();
+    if (currentUrl) URL.revokeObjectURL(currentUrl);
+    currentUrl = URL.createObjectURL(blob);
+    $('image').src = currentUrl;
+    clearInterval(timer);
+    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+    $('meta').textContent = `${elapsed}s`;
     result.style.display = 'flex';
     status.textContent = 'done';
     status.className = 'status ok';
   } catch (e) {
+    clearInterval(timer);
     status.textContent = 'error: ' + e.message;
     status.className = 'status error';
   } finally {

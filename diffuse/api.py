@@ -10,14 +10,13 @@ exposed here.
 """
 from __future__ import annotations
 
-import base64
 import io
 import logging
 import os
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
 from PIL import Image
@@ -45,12 +44,6 @@ class Text2ImageRequest(BaseModel):
     lora_specs: Optional[List[str]] = None  # ["filename.safetensors:0.8", ...]
 
 
-def _to_base64_png(image: Image.Image) -> str:
-    buf = io.BytesIO()
-    image.save(buf, format="PNG", pnginfo=getattr(image, "_pnginfo", None))
-    return base64.b64encode(buf.getvalue()).decode("ascii")
-
-
 def create_app(runtime) -> FastAPI:
     app = FastAPI(title="diffuse-rocm", version="0.1.0")
 
@@ -68,7 +61,7 @@ def create_app(runtime) -> FastAPI:
         try:
             model = runtime.model
         except NotLoadedError:
-            raise HTTPException(503, "no model is loaded")
+            return Response(status_code=503, content="no model is loaded")
         try:
             image = model.generate(
                 prompt=req.prompt,
@@ -87,11 +80,13 @@ def create_app(runtime) -> FastAPI:
             )
         except Exception as e:  # surface generation errors cleanly
             logger.exception("generation failed")
-            raise HTTPException(500, f"generation failed: {e}") from e
-        return {
-            "model": runtime.model_name,
-            "seed": req.seed,
-            "image": _to_base64_png(image),
-        }
+            return Response(status_code=500, content=f"generation failed: {e}")
+
+        buf = io.BytesIO()
+        image.save(buf, format="PNG", pnginfo=getattr(image, "_pnginfo", None))
+        return Response(
+            content=buf.getvalue(),
+            media_type="image/png",
+        )
 
     return app
