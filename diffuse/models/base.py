@@ -35,14 +35,29 @@ mantissa causes banding in image filters); the tensor is only cast to uint8 and
 moved to CPU inside ``_to_pil``. Metadata that must live on the final PNG is a
 separate concern and is added later, after the PIL conversion.
 
+Pipeline caching
+----------------
+Each stage of the generate pipeline is cached (single-entry, on-device tensors).
+Cache keys are computed from *resolved* parameters (after defaults are applied).
+Keys are nested: the sampling key embeds the prompt key, and the decode key
+embeds the sampling key. This gives automatic cascade invalidation — a change
+at any stage invalidates that stage and all downstream stages.
+
+  Stage          | Cache key depends on                    | Cached value
+  ---------------+-----------------------------------------+---------------
+  Prompt         | prompt, negative_prompt, guidance_scale | Conditioning
+  Sampling       | prompt_key + size, steps, seed, sampler, lora_specs | latents
+  Upscale+refine | (no cache — thin middle layer)          | —
+  VAE decode     | sampling_key (+ upscale constants)      | pixels (fp32)
+  Postprocess    | (not cached — cheap)                    | —
+
 LoRA switching
 ---------------
 LoRAs are applied per-request via ``switch_loras()``. The base model is loaded
 without any LoRA baked in. At request time, the requested LoRA(s) are loaded
-(on-demand, cached while active) and their deltas are added to the model's
-parameters. When the next request asks for different LoRAs, the old deltas are
-subtracted (undo) before applying the new ones. This avoids reloading the entire
-model from disk.
+from disk and their deltas are added to the model's parameters. When the next
+request asks for different LoRAs, the old deltas are subtracted (undo) before
+applying the new ones. This avoids reloading the entire model from disk.
 """
 from __future__ import annotations
 
@@ -136,10 +151,17 @@ class DiffusionModel(ABC):
         self.lora_dir = lora_dir
         self._lock = threading.Lock()
 
-        # LoRA state: on-demand cache + undo deltas for clean switching
-        self._lora_cache: Dict[str, Tuple[Dict[str, torch.Tensor], float]] = {}
+        # LoRA state: undo deltas for clean switching
         self._undo_deltas: Dict[str, torch.Tensor] = {}
         self._active_lora_spec: Optional[str] = None
+
+        # Pipeline result cache (single-entry per stage, on-device)
+        self._cache_prompt_key: Optional[Tuple] = None
+        self._cache_prompt_value: Optional[Conditioning] = None
+        self._cache_sampling_key: Optional[Tuple] = None
+        self._cache_sampling_value: Optional[torch.Tensor] = None
+        self._cache_decode_key: Optional[Tuple] = None
+        self._cache_decode_value: Optional[torch.Tensor] = None
 
         # Lazy Sesqui latent upscaler (only loaded if ``upscale`` is requested).
         self._upscaler = None
@@ -269,30 +291,12 @@ class DiffusionModel(ABC):
         return candidate
 
     def _get_lora_sd(self, filename: str) -> Dict[str, torch.Tensor]:
-        """Load a LoRA state dict, using the cache if available."""
+        """Load a LoRA state dict from disk."""
         filepath = self._resolve_lora_path(filename)
-
-        if filename in self._lora_cache:
-            cached_sd, cached_mtime = self._lora_cache[filename]
-            try:
-                if os.path.getmtime(filepath) == cached_mtime:
-                    return cached_sd
-            except OSError:
-                pass
-            # File changed, evict
-            del self._lora_cache[filename]
 
         logger = __import__("logging").getLogger(__name__)
         logger.info("Loading LoRA: %s", filepath)
-        sd = load_file(filepath, device="cpu")
-        mtime = os.path.getmtime(filepath)
-        self._lora_cache[filename] = (sd, mtime)
-        return sd
-
-    def _evict_lora_cache(self, filename: str) -> None:
-        """Remove a LoRA from the cache to free memory."""
-        if filename in self._lora_cache:
-            del self._lora_cache[filename]
+        return load_file(filepath, device="cpu")
 
     def _make_lora_spec_hash(self, lora_specs: Optional[List[str]]) -> str:
         """Create a hash string for the current LoRA configuration."""
@@ -324,17 +328,6 @@ class DiffusionModel(ABC):
             logger.debug("Undoing previous LoRA (%d keys)", len(self._undo_deltas))
             undo_lora_on_model(dit, self._undo_deltas, torch.device(self.device))
             self._undo_deltas = {}
-
-        # Evict LoRAs from cache that are no longer needed
-        active_filenames = set()
-        if lora_specs:
-            for spec in lora_specs:
-                filename, _ = self._parse_lora_spec(spec)
-                active_filenames.add(filename)
-            # Evict inactive LoRAs
-            for cached_name in list(self._lora_cache.keys()):
-                if cached_name not in active_filenames:
-                    self._evict_lora_cache(cached_name)
 
         # Apply new LoRAs
         if lora_specs and self.lora_dir is not None:
@@ -374,6 +367,63 @@ class DiffusionModel(ABC):
         the default is a linear fallback."""
         return 1.0 - percent
 
+    # ---------------------------------------------------------- pipeline cache
+    def _cache_key_prompt(
+        self,
+        prompt: str,
+        negative_prompt: str,
+        guidance_scale: float,
+    ) -> Tuple:
+        """Cache key for prompt conditioning."""
+        return ("prompt", prompt, negative_prompt, guidance_scale)
+
+    def _cache_key_sampling(
+        self,
+        prompt_key: Tuple,
+        width: int,
+        height: int,
+        steps: int,
+        seed: int,
+        sampler: str,
+        lora_specs: Optional[List[str]],
+    ) -> Tuple:
+        """Cache key for the sampling (denoise stage).
+
+        Embeds the prompt key so any prompt/guidance change cascades.
+        guidance_scale is not repeated — it is already in prompt_key.
+        """
+        return (
+            "sampling",
+            prompt_key,
+            width,
+            height,
+            steps,
+            seed,
+            sampler,
+            tuple(sorted(lora_specs)) if lora_specs else None,
+        )
+
+    def _cache_key_decode(
+        self,
+        sampling_key: Tuple,
+        upscale: bool,
+    ) -> Tuple:
+        """Cache key for the VAE decode stage.
+
+        Embeds the sampling key so any upstream change cascades.
+        When upscale is True the upscale-and-refine pipeline produces
+        different latents, so the upscale class-constants are added.
+        """
+        if not upscale:
+            return ("decode", sampling_key)
+        return (
+            "decode_upscale",
+            sampling_key,
+            self.UPSCALE_SCALE,
+            self.REFINE_STEPS,
+            self.REFINE_DENOISE,
+        )
+
     # ------------------------------------------------------------ pipeline
     def generate(
         self,
@@ -392,7 +442,14 @@ class DiffusionModel(ABC):
         sharpening: float = 0.0,
         lora_specs: Optional[List[str]] = None,
     ) -> Image.Image:
-        """Encode -> denoise -> decode -> postprocess. Returns a single PIL image."""
+        """Encode -> denoise -> decode -> postprocess. Returns a single PIL image.
+
+        Each pipeline stage is cached (single-entry). Cache keys are computed from
+        *resolved* parameters so that defaults are accounted for. A change at any
+        stage invalidates that stage and all downstream stages automatically via
+        the nested key structure.
+        """
+        # --- resolve defaults (cache keys must use actual resolved values) ---
         width = width or self.DEFAULT_WIDTH
         height = height or self.DEFAULT_HEIGHT
         steps = steps or self.DEFAULT_STEPS
@@ -402,28 +459,70 @@ class DiffusionModel(ABC):
             else guidance_scale
         )
         width, height = self.resolve_size(width, height)
+        effective_sampler = sampler or self.SAMPLER
 
+        # --- compute cache keys (pure data, no model access) ---
+        prompt_key = self._cache_key_prompt(
+            prompt, negative_prompt, guidance_scale
+        )
+        sampling_key = self._cache_key_sampling(
+            prompt_key, width, height, steps, seed,
+            effective_sampler, lora_specs,
+        )
+        decode_key = self._cache_key_decode(
+            sampling_key, upscale,
+        )
+
+        # --- locked section: cache checks + model access ---
         with self._lock:
-            self._apply_loras_for_generation(lora_specs)
+            # Stage 1: prompt conditioning
+            if self._cache_prompt_key == prompt_key:
+                cond = self._cache_prompt_value
+            else:
+                cond = self.encode_prompt(
+                    prompt, negative_prompt, guidance_scale=guidance_scale
+                )
+                self._cache_prompt_key = prompt_key
+                self._cache_prompt_value = cond
 
-            if seed is None:
-                seed = random.randint(0, 2**32 - 1)
-
-            with torch.no_grad():
-                cond = self.encode_prompt(prompt, negative_prompt, guidance_scale=guidance_scale)
-                latents = self._denoise(cond, steps, height, width, seed, guidance_scale, sampler)
-                if upscale:
-                    latents = self._upscale_and_refine(
-                        latents, cond, steps, height, width, seed, guidance_scale
+            # Stage 2: sampling (denoise)
+            if self._cache_sampling_key == sampling_key:
+                latents = self._cache_sampling_value
+            else:
+                self._apply_loras_for_generation(lora_specs)
+                if seed is None:
+                    seed = random.randint(0, 2**32 - 1)
+                with torch.no_grad():
+                    latents = self._denoise(
+                        cond, steps, height, width, seed,
+                        guidance_scale, effective_sampler,
                     )
-                pixels = self.decode(latents)                 # fp32 GPU tensor [C,H,W]
-                pixels = self.postprocess(
-                    pixels,
-                    qwen_vae_enhance=qwen_vae_enhance,
-                    film_grain_strength=film_grain,
-                    sharpening=sharpening,
-                )  # tensor filters (hook)
-                return self._to_pil(pixels)                   # final uint8 -> PIL
+                self._cache_sampling_key = sampling_key
+                self._cache_sampling_value = latents
+
+            # Stage 3: upscale (if requested) — no cache, sits between
+            # sampling and decode.  Uses cached latents from stage 2.
+            if upscale:
+                latents = self._upscale_and_refine(
+                    latents, cond, steps, height, width, seed, guidance_scale
+                )
+
+            # Stage 4: VAE decode
+            if self._cache_decode_key == decode_key:
+                pixels = self._cache_decode_value
+            else:
+                pixels = self.decode(latents)  # fp32 GPU tensor [C,H,W]
+                self._cache_decode_key = decode_key
+                self._cache_decode_value = pixels
+
+            # Stage 5: postprocess (cheap — not cached)
+            pixels = self.postprocess(
+                pixels,
+                qwen_vae_enhance=qwen_vae_enhance,
+                film_grain_strength=film_grain,
+                sharpening=sharpening,
+            )
+            return self._to_pil(pixels)
 
     def _denoise(
         self,
@@ -433,7 +532,7 @@ class DiffusionModel(ABC):
         width: int,
         seed: int,
         guidance_scale: float,
-        sampler: Optional[str] = None,
+        sampler: str,
     ) -> torch.Tensor:
         """Shared denoising loop over the model's ``schedule``.
 
