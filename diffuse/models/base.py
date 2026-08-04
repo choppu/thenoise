@@ -47,7 +47,7 @@ at any stage invalidates that stage and all downstream stages.
   ---------------+-----------------------------------------+---------------
   Prompt         | prompt, negative_prompt, guidance_scale | Conditioning
   Sampling       | prompt_key + size, steps, seed, sampler, lora_specs | latents
-  Upscale+refine | (no cache — thin middle layer)          | —
+  Upscale+refine | (driven by decode cache hit below)      | —
   VAE decode     | sampling_key (+ upscale constants)      | pixels (fp32)
   Postprocess    | (not cached — cheap)                    | —
 
@@ -500,17 +500,15 @@ class DiffusionModel(ABC):
                 self._cache_sampling_key = sampling_key
                 self._cache_sampling_value = latents
 
-            # Stage 3: upscale (if requested) — no cache, sits between
-            # sampling and decode.  Uses cached latents from stage 2.
-            if upscale:
-                latents = self._upscale_and_refine(
-                    latents, cond, steps, height, width, seed, guidance_scale
-                )
-
-            # Stage 4: VAE decode
+            # Stage 3/4: upscale + decode (interleaved so cache hits skip upscale)
             if self._cache_decode_key == decode_key:
                 pixels = self._cache_decode_value
             else:
+                # Cache miss — run upscale (if requested) then decode
+                if upscale:
+                    latents = self._upscale_and_refine(
+                        latents, cond, steps, height, width, seed, guidance_scale
+                    )
                 pixels = self.decode(latents)  # fp32 GPU tensor [C,H,W]
                 self._cache_decode_key = decode_key
                 self._cache_decode_value = pixels
