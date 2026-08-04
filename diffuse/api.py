@@ -13,9 +13,11 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import os
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from PIL import Image
@@ -23,6 +25,8 @@ from PIL import Image
 from .runtime import NotLoadedError
 
 logger = logging.getLogger(__name__)
+
+_UI_DIR = os.path.join(os.path.dirname(__file__), "ui")
 
 
 class Text2ImageRequest(BaseModel):
@@ -49,6 +53,11 @@ def _to_base64_png(image: Image.Image) -> str:
 
 def create_app(runtime) -> FastAPI:
     app = FastAPI(title="diffuse-rocm", version="0.1.0")
+
+    @app.get("/", response_class=HTMLResponse)
+    def ui():
+        with open(os.path.join(_UI_DIR, "index.html"), encoding="utf-8") as f:
+            return f.read()
 
     @app.get("/health")
     def health():

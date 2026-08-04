@@ -42,6 +42,7 @@ packages = [
     "diffuse.upscale",
     "diffuse.utils",
     "diffuse.postprocess",
+    "diffuse.ui",
 ]
 
 [tool.setuptools.package-data]
@@ -49,3 +50,5 @@ packages = [
 "diffuse.dit.anima" = ["configs/**/*"]
 # Committed Sesqui latent upscaler weights (bf16, ~6MB).
 "diffuse.upscale" = ["weights/**/*"]
+# Web UI served at /
+"diffuse.ui" = ["*.html"]

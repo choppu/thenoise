@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>diffuse-rocm</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: #1a1a2e; color: #e0e0e0;
+    display: flex; min-height: 100vh;
+  }
+  /* sidebar form */
+  .sidebar {
+    width: 340px; min-width: 340px;
+    background: #16213e; padding: 1.25rem;
+    overflow-y: auto; display: flex; flex-direction: column; gap: .75rem;
+    border-right: 1px solid #0f3460;
+  }
+  .sidebar h1 { font-size: 1.2rem; color: #e94560; margin-bottom: .25rem; }
+  .sidebar label { display: flex; flex-direction: column; gap: .25rem; font-size: .85rem; }
+  .sidebar input, .sidebar textarea, .sidebar select {
+    background: #0f3460; color: #e0e0e0; border: 1px solid #533483;
+    border-radius: 4px; padding: .4rem .5rem; font-size: .85rem;
+  }
+  .sidebar textarea { resize: vertical; min-height: 60px; }
+  .sidebar .row { display: flex; gap: .5rem; }
+  .sidebar .row > * { flex: 1; }
+  .sidebar .row-4 { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+  .sidebar input[type=range] { accent-color: #e94560; }
+  .sidebar .range-val { font-size: .75rem; color: #aaa; text-align: right; }
+  .btn {
+    background: #e94560; color: #fff; border: none; border-radius: 4px;
+    padding: .6rem; font-size: .95rem; cursor: pointer; font-weight: 600;
+  }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn:hover:not(:disabled) { background: #c81e45; }
+  .status { font-size: .8rem; color: #aaa; min-height: 1.2em; }
+  .status.error { color: #e94560; }
+  .status.ok { color: #4ecca3; }
+  .section-label { font-size: .75rem; text-transform: uppercase; color: #888; letter-spacing: .05em; margin-top: .25rem; }
+  /* main area */
+  .main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2rem; gap: 1rem; }
+  .main .placeholder { color: #555; font-size: 1.1rem; }
+  .main img {
+    max-width: 100%; max-height: calc(100vh - 4rem);
+    border-radius: 6px; box-shadow: 0 4px 24px rgba(0,0,0,.5);
+  }
+  .meta { font-size: .8rem; color: #888; }
+  /* spinner */
+  .spinner {
+    width: 40px; height: 40px; border: 3px solid #333;
+    border-top-color: #e94560; border-radius: 50%;
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <h1>diffuse-rocm</h1>
+
+  <label>
+    Prompt
+    <textarea id="prompt" rows="3" placeholder="Describe the image…"></textarea>
+  </label>
+
+  <label>
+    Negative prompt
+    <textarea id="negative_prompt" rows="2" placeholder="(optional)"></textarea>
+  </label>
+
+  <div class="section-label">Size</div>
+  <div class="row-4">
+    <label>Width <input type="number" id="width" placeholder="auto"></label>
+    <label>Height <input type="number" id="height" placeholder="auto"></label>
+  </div>
+
+  <div class="section-label">Sampling</div>
+  <div class="row-4">
+    <label>Steps <input type="number" id="steps" placeholder="auto"></label>
+    <label>Guidance <input type="number" id="guidance_scale" step="0.1" placeholder="auto"></label>
+  </div>
+
+  <label>
+    Sampler
+    <select id="sampler">
+      <option value="er_sde">er_sde</option>
+      <option value="euler">euler</option>
+    </select>
+  </label>
+
+  <label>
+    Seed <input type="number" id="seed" placeholder="random">
+  </label>
+
+  <div class="section-label">Post-processing</div>
+
+  <label>
+    <span style="display:flex;justify-content:space-between">
+      Film grain <span class="range-val" id="film_grain_val">0.0</span>
+    </span>
+    <input type="range" id="film_grain" min="0" max="5" step="0.1" value="0">
+  </label>
+
+  <label>
+    <span style="display:flex;justify-content:space-between">
+      Sharpening <span class="range-val" id="sharpening_val">0.0</span>
+    </span>
+    <input type="range" id="sharpening" min="0" max="1" step="0.05" value="0">
+  </label>
+
+  <label style="flex-direction:row;gap:.5rem;align-items:center">
+    <input type="checkbox" id="upscale"> Upscale (SesquiLSR)
+  </label>
+
+  <label style="flex-direction:row;gap:.5rem;align-items:center">
+    <input type="checkbox" id="qwen_vae_enhance"> Qwen VAE enhance
+  </label>
+
+  <div class="section-label">LoRA</div>
+  <label>
+    LoRA specs (one per line, e.g. <code>style:0.8</code>)
+    <textarea id="lora_specs" rows="2" placeholder="(optional)"></textarea>
+  </label>
+
+  <button class="btn" id="generate">Generate</button>
+  <div class="status" id="status"></div>
+</aside>
+
+<main class="main">
+  <div class="placeholder" id="placeholder">Enter a prompt and click Generate</div>
+  <div id="result" style="display:none;flex-direction:column;align-items:center;gap:.75rem;">
+    <img id="image" alt="generated">
+    <div class="meta" id="meta"></div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// range label updates
+$('film_grain').addEventListener('input', e => $('film_grain_val').textContent = parseFloat(e.target.value).toFixed(2));
+$('sharpening').addEventListener('input', e => $('sharpening_val').textContent = parseFloat(e.target.value).toFixed(2));
+
+$('generate').addEventListener('click', async () => {
+  const btn = $('generate');
+  const status = $('status');
+  const placeholder = $('placeholder');
+  const result = $('result');
+
+  btn.disabled = true;
+  status.className = 'status';
+  status.textContent = 'generating…';
+  placeholder.style.display = 'none';
+  result.style.display = 'none';
+
+  const body = {
+    prompt: $('prompt').value,
+    negative_prompt: $('negative_prompt').value,
+    upscale: $('upscale').checked,
+    qwen_vae_enhance: $('qwen_vae_enhance').checked,
+    film_grain: parseFloat($('film_grain').value),
+    sharpening: parseFloat($('sharpening').value),
+    lora_specs: $('lora_specs').value.trim()
+      ? $('lora_specs').value.split('\n').map(l => l.trim()).filter(Boolean)
+      : null,
+  };
+
+  // only send non-empty / non-placeholder numeric fields
+  const numFields = ['width','height','steps','seed'];
+  for (const f of numFields) {
+    const v = $(f).value;
+    if (v !== '') body[f] = parseInt(v, 10);
+  }
+  const floatFields = ['guidance_scale'];
+  for (const f of floatFields) {
+    const v = $(f).value;
+    if (v !== '') body[f] = parseFloat(v);
+  }
+  const samplerVal = $('sampler').value;
+  if (samplerVal) body.sampler = samplerVal;
+
+  try {
+    const res = await fetch('/text2image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || res.statusText);
+    }
+    const data = await res.json();
+    $('image').src = 'data:image/png;base64,' + data.image;
+    $('meta').textContent = `model: ${data.model}  ·  seed: ${data.seed ?? 'random'}`;
+    result.style.display = 'flex';
+    status.textContent = 'done';
+    status.className = 'status ok';
+  } catch (e) {
+    status.textContent = 'error: ' + e.message;
+    status.className = 'status error';
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
