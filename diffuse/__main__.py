@@ -32,7 +32,7 @@ def main(argv=None) -> None:
     if args.command == "serve":
         _serve(args)
     elif args.command == "generate":
-        from .generate import run_generate  # Phase 4
+        from .generate import run_generate
         run_generate(args)
     else:  # pragma: no cover - argparse requires a subcommand
         raise SystemExit("choose a subcommand: serve | generate")

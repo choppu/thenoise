@@ -1,27 +1,4 @@
-"""Anima (Cosmos-Predict2 2B text2image) adapter.
-
-Loads the Anima DiT, Qwen3-0.6B text encoder + tokenizers, and Qwen-Image VAE once
-and reuses them across requests. Uses the own implementation in ``diffuse.dit.anima``
-and the shared VAE in ``diffuse.vae``.
-
-Project decisions baked in here (same as Krea2):
-  * bf16 only
-  * SDPA attention (``attn_mode="torch"``, ``split_attn=True``)
-  * no block swap / fp8 (128GB unified RAM, bf16-only)
-  * text encoding via the AnimaTokenizeStrategy / AnimaTextEncodingStrategy classes
-    called directly (no global strategy registry needed for a single instance)
-
-The model class owns its defaults, including the "advanced" sampler parameter
-(``flow_shift``), which is hard-coded and NOT exposed to the API/CLI.
-
-The base ``DiffusionModel`` owns the pipeline (encode -> shared denoise loop ->
-decode -> postprocess). Anima implements the model-specific kernels: its DiT
-operates on a 5D latent ``[B, C, 1, H, W]`` (a frame axis of 1), so ``prepare_latent``
-adds and ``finalize_latent`` removes that axis around the shared loop.
-
-Inference is serialized with a lock (torch forward on a shared model is not
-thread-safe).
-"""
+"""Anima (Cosmos-Predict2 2B text2image) adapter."""
 from __future__ import annotations
 
 import logging
@@ -51,13 +28,7 @@ class AnimaModel(DiffusionModel):
 
     @staticmethod
     def detect(f) -> bool:
-        """True if this handle is the Anima DiT.
-
-        Anima DiTs expose keys under the ``net.`` prefix (anima-base-v1.0 and
-        earlier) or ``model.diffusion_model.`` prefix (anima-turbo-v1.0 and
-        later). Both are recognized here; the loader strips whichever prefix is
-        present.
-        """
+        """True if this handle is the Anima DiT."""
         keys = f.keys()
         return any(k.startswith("net.") for k in keys) or any(
             k.startswith("model.diffusion_model.") for k in keys
@@ -210,7 +181,7 @@ class AnimaModel(DiffusionModel):
         return width, height
 
     def percent_to_sigma(self, percent: float) -> float:
-        """Percent -> sigma (ComfyUI ModelSamplingDiscreteFlow, shift=3.0).
+        """Percent -> sigma.
 
         Used by the ER-SDE solver to nudge the first sigma just below 1.
         """

@@ -1,13 +1,9 @@
 """SesquiLSR latent upscaler — vendored subset for the Wan/Qwen-Image VAE.
 
-Copied and trimmed from https://github.com/LoganBooker/SesquiLSR (MIT). Only the
-``LatentUpscaler`` architecture is kept (we use the Wan21 checkpoint, which
-covers Wan 2.x / Krea 2 / Anima / Qwen Image — a 16-channel, z-score-normalized
-latent). SDXL/Flux/Flux2/Ideogram support and the ComfyUI node are dropped.
+Copied and trimmed from https://github.com/LoganBooker/SesquiLSR (MIT).
 
 The upscaler operates on *raw* VAE latents (see ``inference_adaptors`` for the
-normalized<->raw conversion). We run it in bf16 to match the rest of the engine
-(the upstream README notes half-precision has no quality effect).
+normalized<->raw conversion). We run it in bf16 to match the rest of the engine.
 
 Original copyright/license notice follows.
 """

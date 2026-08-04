@@ -83,43 +83,25 @@ class DiffusionModel(ABC):
 
     name: str = ""
 
-    # Model-owned defaults. Advanced sampler params (y1/y2/mu, flow_shift) live
-    # here too but are NOT exposed to the API/CLI.
     DEFAULT_WIDTH = 1024
     DEFAULT_HEIGHT = 1024
     DEFAULT_STEPS = 28
     DEFAULT_GUIDANCE_SCALE = 0.0
 
-    # Denoising solver. ``er_sde`` (ComfyUI ER-SDE, a higher-order stochastic
-    # solver) is the default; ``euler`` is the classic flow-ODE integrator. Pass
-    # ``sampler`` to ``generate`` to override. Both models use the CONST flow
-    # parametrization, so the solver is model-agnostic.
     SAMPLER = "er_sde"
 
     # Canonical latent geometry (shared Qwen-Image VAE).
     LATENT_CHANNELS = 16
     _VAE_SCALE = 8
 
-    # Optional latent upscaling + refine (SesquiLSR). ``UPSCALE_SCALE`` is the
-    # latent upscale factor (2x). The refine mirrors ComfyUI's SEPARATE second
-    # KSampler pass (img2img, steps=1, denoise=0.1, euler, simple scheduler): it
-    # builds an independent ``int(REFINE_STEPS/REFINE_DENOISE)``-step schedule
-    # and takes the last ``REFINE_STEPS`` steps of it. It deliberately does NOT
-    # reuse the original generation ``steps`` — the second KSampler in ComfyUI
-    # never sees how many steps the first one used.
     UPSCALE_SCALE = 2
-    REFINE_STEPS = 1     # ComfyUI second-KSampler ``steps``
-    REFINE_DENOISE = 0.1  # ComfyUI second-KSampler ``denoise``
+    REFINE_STEPS = 1
+    REFINE_DENOISE = 0.1
 
     @staticmethod
     @abstractmethod
     def detect(f) -> bool:
-        """Return True if the open safetensors handle ``f`` is this model's DiT.
-
-        ``f`` is a ``safetensors.safe_open(..., framework="pt")`` handle, opened
-        ONCE by the runtime and passed to each class in turn — the file is never
-        re-opened per class.
-        """
+        """Return True if the open safetensors handle ``f`` is this model's DiT."""
 
     def __init__(
         self,
@@ -224,9 +206,7 @@ class DiffusionModel(ABC):
 
         The ER-SDE solver needs ``sigma`` just below 1 (its ``sigma/(1-sigma)``
         blows up at exactly 1). Flow models override this with their shift
-        (Anima: ``time_snr_shift``; Krea2: ``flux_time_shift``); the default is
-        a linear fallback.
-        """
+        the default is a linear fallback."""
         return 1.0 - percent
 
     # ------------------------------------------------------------ pipeline
@@ -244,15 +224,7 @@ class DiffusionModel(ABC):
         sampler: Optional[str] = None,
         qwen_vae_enhance: bool = False,
     ) -> Image.Image:
-        """Encode -> denoise -> decode -> postprocess. Returns a single PIL image.
-
-        With ``upscale=True``, the canonical latent is upscaled 2x in latent
-        space (SesquiLSR) after the main denoise loop and given a short
-        low-strength refine denoise before decoding, doubling the output size.
-        ``sampler`` selects the denoising solver (default ``self.SAMPLER``).
-        ``qwen_vae_enhance`` applies the Nyquist Notch post filter to the decoded
-        pixels to remove 2px grid artifacts.
-        """
+        """Encode -> denoise -> decode -> postprocess. Returns a single PIL image."""
         width = width or self.DEFAULT_WIDTH
         height = height or self.DEFAULT_HEIGHT
         steps = steps or self.DEFAULT_STEPS
@@ -328,7 +300,7 @@ class DiffusionModel(ABC):
         seed: int,
         dtype: torch.dtype,
     ) -> torch.Tensor:
-        """ER-SDE solver (ComfyUI ``sample_er_sde``) for flow (CONST) models.
+        """ER-SDE solver for flow (CONST) models.
 
         A higher-order stochastic solver, still one ``denoise_step`` per
         schedule step (same compute cost as Euler). ``denoised`` is the
@@ -361,9 +333,6 @@ class DiffusionModel(ABC):
         old_denoised_d = None
         for i in tqdm(range(len(sigmas) - 1), desc="sampling"):
             sigma_i = sigmas[i]
-            # The DiT expects the timestep in the latent dtype (bf16) — the same
-            # dtype ``step.t`` carries in the euler loop — while the solver math
-            # below uses the fp32 ``sigma_i``.
             v = self.denoise_step(x, sigma_i.to(dtype), cond, guidance_scale, i)
             xf = x.float()
             denoised = xf - sigma_i * v.float()
@@ -471,18 +440,7 @@ class DiffusionModel(ABC):
         seed: int,
         guidance_scale: float,
     ) -> torch.Tensor:
-        """One low-strength refine denoise step on an already-clean latent.
-
-        Mirrors ComfyUI's separate second KSampler (img2img, steps=1,
-        denoise=0.1, euler, simple scheduler). ComfyUI computes the refine
-        sigmas from an INDEPENDENT ``int(steps/denoise)``-step schedule and
-        keeps the last ``steps`` of them — it never sees how many steps the
-        first KSampler used, so neither do we. The noise is blended with the
-        model-sampling's CONST scaling ``x = sigma*noise + (1-sigma)*z``, and a
-        single Euler step ``x -= sigma*v`` removes it (delta == t == strength
-        for the final step). This is identical for euler and er_sde: with one
-        step, ER-SDE degenerates to ``x = denoised = x - sigma*v``.
-        """
+        """One low-strength refine denoise step on an already-clean latent."""
         refine_steps = self.REFINE_STEPS
         denoise = self.REFINE_DENOISE
         new_steps = int(refine_steps / denoise)  # int(1/0.1) = 10
@@ -526,16 +484,7 @@ class DiffusionModel(ABC):
         *,
         qwen_vae_enhance: bool = False,
     ) -> torch.Tensor:
-        """Tensor post-processing hook. Runs on the fp32 GPU pixels.
-
-        Override or compose (e.g. color grading, sharpening, upscaling). Metadata
-        that must live on the final PNG is added after ``_to_pil`` instead.
-
-        With ``qwen_vae_enhance``, applies the Nyquist Notch filter (see
-        ``diffuse.postprocess.nyquist``) to strip 2px grid artifacts from the
-        decoded pixels. The filter is implemented in its own module; this hook
-        only dispatches to it.
-        """
+        """Tensor post-processing hook. Runs on the fp32 GPU pixels."""
         if qwen_vae_enhance:
             pixels = nyquist_notch(pixels)
         return pixels

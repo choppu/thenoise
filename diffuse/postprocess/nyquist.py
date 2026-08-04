@@ -32,10 +32,7 @@ def nyquist_notch(pixels: torch.Tensor) -> torch.Tensor:
     the grid artifact while leaving the rest of the image intact.
 
     Only the first three (RGB) channels are filtered; any extra channels pass
-    through unchanged. The filter is linear with unit DC gain (``sum(K) == 0``,
-    so ``sum(combined) == 1``), meaning operating in ``[-1, 1]`` instead of the
-    shader's ``[0, 1]`` texture space shifts nothing. The caller's ``[-1, 1]``
-    clamp in ``_to_pil`` takes the place of the shader's ``clamp(notched, 0, 1)``.
+    through unchanged.
     """
     c, _h, _w = pixels.shape
     rgb = pixels[: min(3, c)]
@@ -48,8 +45,7 @@ def nyquist_notch(pixels: torch.Tensor) -> torch.Tensor:
     ky = k.view(1, 1, 7, 1).expand(3, 1, 7, 1).contiguous()
     kxy = (k[:, None] * k[None, :]).view(1, 1, 7, 7).expand(3, 1, 7, 7).contiguous()
 
-    # Clamp-to-edge sampling (mirrors GLSL ``texture``): pad with edge
-    # replication so border texels sample the edge value instead of zero.
+    # Clamp-to-edge sampling: pad with edge replication so border texels sample the edge value instead of zero.
     x = F.pad(rgb.unsqueeze(0), (3, 3, 3, 3), mode="replicate")  # [1, 3, H+6, W+6]
 
     bx = F.conv2d(x, kx, groups=3)[:, :, 3:-3, :]   # 1x7: trim the H pad

@@ -1,29 +1,4 @@
-"""Krea 2 (K2) adapter.
-
-Loads the MMDiT, Qwen-Image VAE and Qwen3-VL conditioner once and reuses them
-across requests. Uses the own implementation in ``diffuse.dit.krea2`` and the
-shared VAE in ``diffuse.vae``.
-
-Project decisions baked in here:
-  * bf16 only (no fp8 / other formats)
-  * SDPA attention (``attn_mode="torch"``) -- no flash-attn needed on ROCm
-  * no block swap (everything fits in 128GB unified RAM)
-  * LoRA merging at load time via ``krea2_utils.load_krea2_dit(lora_weights=...)``
-  * the text encoder stays resident (plenty of unified RAM), so it is never
-    freed/reloaded between requests
-
-The model class owns its defaults, including the "advanced" sampler parameters
-(``y1``, ``y2``, ``mu``), which are hard-coded and NOT exposed to the API/CLI.
-
-The base ``DiffusionModel`` owns the pipeline (encode -> shared denoise loop ->
-decode -> postprocess). Krea2's DiT operates on patched token sequences, so
-``prepare_latent`` patchifies the canonical latent and builds the position/mask
-tensors ONCE around the loop, and ``finalize_latent`` unpatchifies back. The
-per-step ``denoise_step`` is then just the DiT forward + CFG.
-
-Inference is serialized with a lock: torch forward on a shared model is not
-thread-safe, so concurrent requests are queued per model.
-"""
+"""Krea 2 (K2) adapter."""
 from __future__ import annotations
 
 import logging

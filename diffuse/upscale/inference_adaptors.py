@@ -6,9 +6,7 @@ passes around) and the canonical raw VAE latent space.
 
 diffuse-rocm's canonical latent is the *normalized* (per-channel z-score) latent
 ``(VAE_raw - mean) / std``, exactly the Qwen-Image / Wan21 / Anima latent format
-that ``make_wan21`` expects. Both models in this repo (Krea2 and Anima) use the
-shared Qwen-Image VAE, so only the Wan21 adaptor is needed. SDXL/Flux/Flux2/
-Ideogram adaptors from the upstream repo are dropped.
+that ``make_wan21`` expects.
 
 Copied and trimmed from https://github.com/LoganBooker/SesquiLSR (MIT).
 """
