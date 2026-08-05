@@ -537,8 +537,6 @@ class QwenImageMidBlock(nn.Module):
         self.attentions = nn.ModuleList(attentions)
         self.resnets = nn.ModuleList(resnets)
 
-        self.gradient_checkpointing = False
-
     def forward(self, x, feat_cache=None, feat_idx=[0]):
         # First residual block
         x = self.resnets[0](x, feat_cache, feat_idx)
@@ -621,8 +619,6 @@ class QwenImageEncoder3d(nn.Module):
         self.norm_out = QwenImageRMS_norm(out_dim, images=False)
         self.conv_out = QwenImageCausalConv3d(out_dim, z_dim, 3, padding=1)
 
-        self.gradient_checkpointing = False
-
     def forward(self, x, feat_cache=None, feat_idx=[0]):
         if feat_cache is not None:
             idx = feat_idx[0]
@@ -703,8 +699,6 @@ class QwenImageUpBlock(nn.Module):
         self.upsamplers = None
         if upsample_mode is not None:
             self.upsamplers = nn.ModuleList([QwenImageResample(out_dim, mode=upsample_mode)])
-
-        self.gradient_checkpointing = False
 
     def forward(self, x, feat_cache=None, feat_idx=[0]):
         """
@@ -812,8 +806,6 @@ class QwenImageDecoder3d(nn.Module):
         self.norm_out = QwenImageRMS_norm(out_dim, images=False)
         self.conv_out = QwenImageCausalConv3d(out_dim, output_channels, 3, padding=1)
 
-        self.gradient_checkpointing = False
-
     def forward(self, x, feat_cache=None, feat_idx=[0]):
         ## conv1
         if feat_cache is not None:
@@ -859,8 +851,6 @@ class AutoencoderKLQwenImage(nn.Module):  # ModelMixin, ConfigMixin, FromOrigina
     This model inherits from [`ModelMixin`]. Check the superclass documentation for it's generic methods implemented
     for all models (such as downloading or saving).
     """
-
-    _supports_gradient_checkpointing = False
 
     # @register_to_config
     def __init__(

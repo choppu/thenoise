@@ -13,12 +13,10 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.utils.checkpoint
 from einops import rearrange
 from torch import Tensor
 
 from thenoise.utils.attention import AttentionParams, attention as common_attention
-from thenoise.utils.offloading import BlockSwapConfig, create_offloader
 
 
 def rope(pos: Tensor, dim: int, theta: float = 1e4, ntk: float = 1.0) -> Tensor:
@@ -342,55 +340,6 @@ class SingleStreamDiT(nn.Module):
 
         self.tproj = nn.Sequential(nn.GELU(approximate="tanh"), nn.Linear(config.features, config.features * 6))
 
-        # musubi training hooks
-        self.gradient_checkpointing = False
-        self.blocks_to_swap = 0
-        self.offloader = None
-
-    def enable_gradient_checkpointing(self, cpu_offload: bool = False):
-        # cpu_offload is accepted for interface parity; not implemented for K2 yet.
-        self.gradient_checkpointing = True
-
-    def disable_gradient_checkpointing(self):
-        self.gradient_checkpointing = False
-
-    # Block swap (CPU offloading of the main SingleStreamBlocks). Mirrors the other
-    # musubi architectures: the trainer calls enable_block_swap + move_to_device_except_swap_blocks
-    # at load, and the per-block wait/submit in forward streams blocks between CPU and GPU.
-    def enable_block_swap(self, num_blocks: int, config: BlockSwapConfig):
-        self.blocks_to_swap = num_blocks
-        num_main_blocks = len(self.blocks)
-        assert num_blocks <= num_main_blocks - 2, f"Cannot swap more than {num_main_blocks - 2} blocks. Requested {num_blocks}."
-        self.offloader = create_offloader("single", self.blocks, num_main_blocks, num_blocks, config)
-        print(
-            f"Krea 2: Block swap enabled. Swapping {num_blocks} of {num_main_blocks} blocks "
-            f"to device {config.device}. Supports backward: {config.supports_backward}"
-        )
-
-    def move_to_device_except_swap_blocks(self, device: torch.device):
-        # Assume the model is on CPU; keep the swap blocks on CPU to reduce peak memory.
-        if self.blocks_to_swap:
-            saved_blocks = self.blocks
-            self.blocks = nn.ModuleList()
-        self.to(device)
-        if self.blocks_to_swap:
-            self.blocks = saved_blocks
-
-    def prepare_block_swap_before_forward(self):
-        if not self.blocks_to_swap:
-            return
-        self.offloader.prepare_block_devices_before_forward(self.blocks)
-
-    def switch_block_swap_for_inference(self):
-        if self.blocks_to_swap:
-            self.offloader.set_forward_only(True)
-            self.prepare_block_swap_before_forward()
-
-    def switch_block_swap_for_training(self):
-        if self.blocks_to_swap:
-            self.offloader.set_forward_only(False)
-            self.prepare_block_swap_before_forward()
-
     def forward(
         self,
         img: Tensor,
@@ -434,17 +383,8 @@ class SingleStreamDiT(nn.Module):
 
         freqs = self.posemb(pos)
 
-        for index, block in enumerate(self.blocks):
-            if self.blocks_to_swap:
-                self.offloader.wait_for_block(index)
-
-            if self.gradient_checkpointing and self.training:
-                combined = torch.utils.checkpoint.checkpoint(block, combined, tvec, freqs, attn_params, use_reentrant=False)
-            else:
-                combined = block(combined, tvec, freqs, attn_params)
-
-            if self.blocks_to_swap:
-                self.offloader.submit_move_blocks_forward(self.blocks, index)
+        for block in self.blocks:
+            combined = block(combined, tvec, freqs, attn_params)
 
         final = self.last(combined, t)
         output = final[:, :imglen, :]  # image tokens are the leading slice now

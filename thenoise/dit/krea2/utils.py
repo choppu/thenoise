@@ -51,9 +51,8 @@ def load_krea2_dit(
     """
     device = torch.device(device)
     loading_device = device if loading_device is None else torch.device(loading_device)
-    has_lora = lora_weights is not None and len(lora_weights) > 0
 
-    logger.info(f"Loading Krea 2 DiT weights from {dit_path}" + (f" (+{len(lora_weights)} LoRA merged)" if has_lora else ""))
+    logger.info(f"Loading Krea 2 DiT weights from {dit_path}")
     with torch.device("meta"):
         dit = SingleStreamDiT(config, attn_mode=attn_mode, split_attn=split_attn)
 

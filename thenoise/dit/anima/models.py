@@ -11,32 +11,7 @@ from einops.layers.torch import Rearrange
 from torch import nn
 import torch.nn.functional as F
 
-from torch.utils.checkpoint import checkpoint as torch_checkpoint
-
 from thenoise.utils import attention
-from thenoise.utils.offloading import BlockSwapConfig, ModelOffloader
-
-
-def to_device(x, device):
-    if isinstance(x, torch.Tensor):
-        return x.to(device)
-    elif isinstance(x, (list, tuple)):
-        return type(x)(to_device(elem, device) for elem in x)
-    elif isinstance(x, dict):
-        return {k: to_device(v, device) for k, v in x.items()}
-    else:
-        return x
-
-
-def to_cpu(x):
-    if isinstance(x, torch.Tensor):
-        return x.cpu()
-    elif isinstance(x, (list, tuple)):
-        return [to_cpu(elem) for elem in x]
-    elif isinstance(x, dict):
-        return {k: to_cpu(v) for k, v in x.items()}
-    else:
-        return x
 
 from thenoise.utils.setup_logging import setup_logging
 
@@ -733,19 +708,7 @@ class Block(nn.Module):
             self.adaln_modulation_cross_attn = nn.Sequential(nn.SiLU(), nn.Linear(x_dim, 3 * x_dim, bias=False))
             self.adaln_modulation_mlp = nn.Sequential(nn.SiLU(), nn.Linear(x_dim, 3 * x_dim, bias=False))
 
-        self.gradient_checkpointing = False
-        self.cpu_offload_checkpointing = False
-        self.unsloth_offload_checkpointing = False
-
-    def enable_gradient_checkpointing(self, cpu_offload: bool = False, unsloth_offload: bool = False):
-        self.gradient_checkpointing = True
-        self.cpu_offload_checkpointing = cpu_offload if not unsloth_offload else False
-        self.unsloth_offload_checkpointing = unsloth_offload
-
-    def disable_gradient_checkpointing(self):
-        self.gradient_checkpointing = False
-        self.cpu_offload_checkpointing = False
-        self.unsloth_offload_checkpointing = False
+        self.init_weights()
 
     def reset_parameters(self) -> None:
         self.layer_norm_self_attn.reset_parameters()
@@ -878,69 +841,16 @@ class Block(nn.Module):
         adaln_lora_B_T_3D: Optional[torch.Tensor] = None,
         extra_per_block_pos_emb: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if self.training and self.gradient_checkpointing:
-            if self.unsloth_offload_checkpointing:
-                # Unsloth: async non-blocking CPU RAM offload (fastest offload method)
-                return unsloth_checkpoint(
-                    self._forward,
-                    x_B_T_H_W_D,
-                    emb_B_T_D,
-                    crossattn_emb,
-                    attn_params,
-                    use_fp32,
-                    rope_emb_L_1_1_D,
-                    adaln_lora_B_T_3D,
-                    extra_per_block_pos_emb,
-                )
-            elif self.cpu_offload_checkpointing:
-                # Standard cpu offload: blocking transfers
-                def create_custom_forward(func):
-                    def custom_forward(*inputs):
-                        # Determine original device from first tensor input
-                        device = next(t.device for t in inputs if isinstance(t, torch.Tensor))
-                        device_inputs = to_device(inputs, device)
-                        outputs = func(*device_inputs)
-                        return to_cpu(outputs)
-
-                    return custom_forward
-
-                return torch_checkpoint(
-                    create_custom_forward(self._forward),
-                    x_B_T_H_W_D,
-                    emb_B_T_D,
-                    crossattn_emb,
-                    attn_params,
-                    use_fp32,
-                    rope_emb_L_1_1_D,
-                    adaln_lora_B_T_3D,
-                    extra_per_block_pos_emb,
-                    use_reentrant=False,
-                )
-            else:
-                # Standard gradient checkpointing (no offload)
-                return torch_checkpoint(
-                    self._forward,
-                    x_B_T_H_W_D,
-                    emb_B_T_D,
-                    crossattn_emb,
-                    attn_params,
-                    use_fp32,
-                    rope_emb_L_1_1_D,
-                    adaln_lora_B_T_3D,
-                    extra_per_block_pos_emb,
-                    use_reentrant=False,
-                )
-        else:
-            return self._forward(
-                x_B_T_H_W_D,
-                emb_B_T_D,
-                crossattn_emb,
-                attn_params,
-                use_fp32,
-                rope_emb_L_1_1_D,
-                adaln_lora_B_T_3D,
-                extra_per_block_pos_emb,
-            )
+        return self._forward(
+            x_B_T_H_W_D,
+            emb_B_T_D,
+            crossattn_emb,
+            attn_params,
+            use_fp32,
+            rope_emb_L_1_1_D,
+            adaln_lora_B_T_3D,
+            extra_per_block_pos_emb,
+        )
 
 
 # Main DiT Model: MiniTrainDIT (renamed to Anima)
@@ -1016,10 +926,6 @@ class Anima(nn.Module):
         self.attn_mode = attn_mode
         self.split_attn = split_attn
 
-        # Block swap support
-        self.blocks_to_swap = None
-        self.offloader: Optional[ModelOffloader] = None
-
         self.build_patch_embed()
         self.build_pos_embed()
         self.use_adaln_lora = use_adaln_lora
@@ -1074,14 +980,6 @@ class Anima(nn.Module):
             block.init_weights()
         self.final_layer.init_weights()
         self.t_embedding_norm.reset_parameters()
-
-    def enable_gradient_checkpointing(self, cpu_offload: bool = False, unsloth_offload: bool = False):
-        for block in self.blocks:
-            block.enable_gradient_checkpointing(cpu_offload=cpu_offload, unsloth_offload=unsloth_offload)
-
-    def disable_gradient_checkpointing(self):
-        for block in self.blocks:
-            block.disable_gradient_checkpointing()
 
     @property
     def device(self):
@@ -1165,114 +1063,6 @@ class Anima(nn.Module):
         )
         return x_B_C_Tt_Hp_Wp
 
-    def enable_block_swap(self, num_blocks: int, device: torch.device):
-        self.blocks_to_swap = num_blocks
-
-        assert (
-            self.blocks_to_swap <= self.num_blocks - 2
-        ), f"Cannot swap more than {self.num_blocks - 2} blocks. Requested: {self.blocks_to_swap} blocks."
-
-        self.offloader = ModelOffloader(self.blocks, self.blocks_to_swap, device)
-        logger.info(f"Anima: Block swap enabled. Swapping {num_blocks} blocks, total blocks: {self.num_blocks}, device: {device}.")
-
-    def move_to_device_except_swap_blocks(self, device: torch.device):
-        # Move all modules to device except blocks (which are managed by offloader)
-        if self.blocks_to_swap:
-            save_blocks = self.blocks
-            self.blocks = None  # Use None to skip .to() on blocks (consistent with flux_models.py)
-
-        self.to(device)
-
-        if self.blocks_to_swap:
-            self.blocks = save_blocks
-
-    def switch_block_swap_for_inference(self):
-        if self.blocks_to_swap is None or self.blocks_to_swap == 0:
-            return
-        self.offloader.set_forward_only(True)
-        self.prepare_block_swap_before_forward()
-        print(f"Anima: Block swap set to forward only.")
-
-    def switch_block_swap_for_training(self):
-        if self.blocks_to_swap is None or self.blocks_to_swap == 0:
-            return
-        self.offloader.set_forward_only(False)
-        self.prepare_block_swap_before_forward()
-        print(f"Anima: Block swap set to forward and backward.")
-
-    def prepare_block_swap_before_forward(self):
-        if self.blocks_to_swap is None or self.blocks_to_swap == 0:
-            return
-        self.offloader.prepare_block_devices_before_forward(self.blocks)
-
-    def forward_mini_train_dit(
-        self,
-        x_B_C_T_H_W: torch.Tensor,
-        timesteps_B_T: torch.Tensor,
-        crossattn_emb: torch.Tensor,
-        fps: Optional[torch.Tensor] = None,
-        padding_mask: Optional[torch.Tensor] = None,
-        source_attention_mask: Optional[torch.Tensor] = None,
-        t5_input_ids: Optional[torch.Tensor] = None,
-        t5_attn_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """
-        Args:
-            x_B_C_T_H_W: (B, C, T, H, W) noisy latents
-            timesteps_B_T: (B,) or (B, T) timesteps
-            crossattn_emb: (B, N, D) cross-attention embeddings (or raw Qwen3 prompt_embeds if t5_input_ids provided)
-            fps: Optional frames per second
-            padding_mask: Optional padding mask
-            source_attention_mask: Optional attention mask for Qwen3 embeddings (used with LLM adapter)
-            t5_input_ids: Optional T5 token IDs (triggers LLM adapter when provided)
-            t5_attn_mask: Optional T5 attention mask
-        """
-        # Run LLM adapter inside forward for correct DDP gradient synchronization
-        if t5_input_ids is not None and self.use_llm_adapter and hasattr(self, "llm_adapter"):
-            crossattn_emb = self.llm_adapter(
-                source_hidden_states=crossattn_emb,
-                target_input_ids=t5_input_ids,
-                target_attention_mask=t5_attn_mask,
-                source_attention_mask=source_attention_mask,
-            )
-            if t5_attn_mask is not None:
-                crossattn_emb[~t5_attn_mask.bool()] = 0
-
-        x_B_T_H_W_D, rope_emb_L_1_1_D, extra_pos_emb = self.prepare_embedded_sequence(
-            x_B_C_T_H_W,
-            fps=fps,
-            padding_mask=padding_mask,
-        )
-
-        if timesteps_B_T.ndim == 1:
-            timesteps_B_T = timesteps_B_T.unsqueeze(1)
-        t_embedding_B_T_D, adaln_lora_B_T_3D = self.t_embedder(timesteps_B_T)
-        t_embedding_B_T_D = self.t_embedding_norm(t_embedding_B_T_D)
-
-        block_kwargs = {
-            "rope_emb_L_1_1_D": rope_emb_L_1_1_D,
-            "adaln_lora_B_T_3D": adaln_lora_B_T_3D,
-            "extra_per_block_pos_emb": extra_pos_emb,
-        }
-
-        attn_params = attention.AttentionParams.create_attention_params(self.attn_mode, self.split_attn)
-
-        # Determine whether to use float32 for block computations based on input dtype (use float32 for better stability when input is float16)
-        use_fp32 = x_B_T_H_W_D.dtype == torch.float16
-
-        for block_idx, block in enumerate(self.blocks):
-            if self.blocks_to_swap:
-                self.offloader.wait_for_block(block_idx)
-
-            x_B_T_H_W_D = block(x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb, attn_params, use_fp32, **block_kwargs)
-
-            if self.blocks_to_swap:
-                self.offloader.submit_move_blocks(self.blocks, block_idx)
-
-        x_B_T_H_W_O = self.final_layer(x_B_T_H_W_D, t_embedding_B_T_D, adaln_lora_B_T_3D=adaln_lora_B_T_3D, use_fp32=use_fp32)
-        x_B_C_Tt_Hp_Wp = self.unpatchify(x_B_T_H_W_O)
-        return x_B_C_Tt_Hp_Wp
-
     def forward(
         self,
         x: torch.Tensor,
@@ -1286,7 +1076,35 @@ class Anima(nn.Module):
         **kwargs,
     ) -> torch.Tensor:
         context = self._preprocess_text_embeds(context, target_input_ids, target_attention_mask, source_attention_mask)
-        return self.forward_mini_train_dit(x, timesteps, context, fps=fps, padding_mask=padding_mask, **kwargs)
+
+        x_B_T_H_W_D, rope_emb_L_1_1_D, extra_pos_emb = self.prepare_embedded_sequence(
+            x,
+            fps=fps,
+            padding_mask=padding_mask,
+        )
+
+        if timesteps.ndim == 1:
+            timesteps = timesteps.unsqueeze(1)
+        t_embedding_B_T_D, adaln_lora_B_T_3D = self.t_embedder(timesteps)
+        t_embedding_B_T_D = self.t_embedding_norm(t_embedding_B_T_D)
+
+        block_kwargs = {
+            "rope_emb_L_1_1_D": rope_emb_L_1_1_D,
+            "adaln_lora_B_T_3D": adaln_lora_B_T_3D,
+            "extra_per_block_pos_emb": extra_pos_emb,
+        }
+
+        attn_params = attention.AttentionParams.create_attention_params(self.attn_mode, self.split_attn)
+
+        # Determine whether to use float32 for block computations based on input dtype (use float32 for better stability when input is float16)
+        use_fp32 = x_B_T_H_W_D.dtype == torch.float16
+
+        for block in self.blocks:
+            x_B_T_H_W_D = block(x_B_T_H_W_D, t_embedding_B_T_D, context, attn_params, use_fp32, **block_kwargs)
+
+        x_B_T_H_W_O = self.final_layer(x_B_T_H_W_D, t_embedding_B_T_D, adaln_lora_B_T_3D=adaln_lora_B_T_3D, use_fp32=use_fp32)
+        x_B_C_Tt_Hp_Wp = self.unpatchify(x_B_T_H_W_O)
+        return x_B_C_Tt_Hp_Wp
 
     def _preprocess_text_embeds(
         self, source_hidden_states, target_input_ids, target_attention_mask=None, source_attention_mask=None
