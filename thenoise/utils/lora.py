@@ -1,6 +1,6 @@
 import os
 import re
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, TypedDict, Union
 import torch
 from thenoise.utils.device import synchronize_device
 
@@ -114,21 +114,37 @@ def _compute_lora_delta(
     return delta
 
 
+class LoRAApplyResult(TypedDict):
+    """Result from ``apply_lora_to_model``: cached state for undo.
+
+    Keeps the small rank-reduced LoRA factors in memory instead of full-sized
+    delta tensors.  On undo the deltas are recomputed from these factors.
+    ``affected_keys`` tracks exactly which model parameters were modified,
+    so undo can skip the unaffected ones without iterating the full state dict.
+    """
+
+    lora_sds: List[Dict[str, torch.Tensor]]
+    multipliers: List[float]
+    affected_keys: Tuple[str, ...]
+
+
 def apply_lora_to_model(
     model: torch.nn.Module,
     lora_sds: List[Dict[str, torch.Tensor]],
     multipliers: List[float],
     calc_device: torch.device,
-) -> Dict[str, torch.Tensor]:
+) -> LoRAApplyResult:
     """Apply LoRA weights directly to a model's parameters (in-place).
 
-    Returns a dict of {param_key: delta_tensor} representing the deltas applied,
+    Returns a ``LoRAApplyResult`` holding the LoRA state dicts and multipliers,
     which can be passed to ``undo_lora_on_model`` to restore the original weights.
+    The LoRA state dicts are small (rank-reduced factors) compared to the full
+    model weights, so keeping them in memory is cheap.
 
     Param keys use the same naming as ``model.state_dict()`` (e.g. "blocks.0.attn.gate.weight").
     """
     if not lora_sds:
-        return {}
+        return {"lora_sds": [], "multipliers": []}
 
     if multipliers is None:
         multipliers = [1.0] * len(lora_sds)
@@ -143,11 +159,10 @@ def apply_lora_to_model(
     # Build key sets for each LoRA
     lora_weight_keys_list = [set(sd.keys()) for sd in lora_sds]
 
-    # Collect all model param keys that end with .weight
-    state = base_model.state_dict()
+    # Iterate over named parameters directly (no full state_dict copy)
     undo_deltas: Dict[str, torch.Tensor] = {}
 
-    for model_key, model_weight in state.items():
+    for model_key, model_weight in base_model.named_parameters():
         if not model_key.endswith(".weight"):
             continue
 
@@ -183,45 +198,75 @@ def apply_lora_to_model(
         if len(lora_weight_keys) > 0:
             logger.warning("LoRA %d has unused keys: %s", i, ", ".join(list(lora_weight_keys)[:10]))
 
-    # Apply accumulated deltas to model parameters (in-place)
+    # Apply accumulated deltas to model parameters (in-place, no state_dict copy)
     if undo_deltas:
         with torch.no_grad():
             for param_key, delta in undo_deltas.items():
-                param = model.get_submodule(".".join(param_key.split(".")[:-1])) if "." in param_key else model
-                param_name = param_key.rsplit(".", 1)[-1]
-                # Navigate to the module and apply delta
-                # Simpler: use state_dict approach
-                state[param_key] = state[param_key] + delta.to(
-                    state[param_key].device, state[param_key].dtype
-                )
-        base_model.load_state_dict(state)
+                param = base_model.get_parameter(param_key)
+                param.data.add_(delta.to(param.device, param.dtype))
 
-    # Move deltas to match param devices for efficient undo
-    for key in undo_deltas:
-        undo_deltas[key] = undo_deltas[key].to(calc_device)
-
-    return undo_deltas
+    return {
+        "lora_sds": lora_sds,
+        "multipliers": multipliers,
+        "affected_keys": tuple(undo_deltas.keys()),
+    }
 
 
 def undo_lora_on_model(
     model: torch.nn.Module,
-    undo_deltas: Dict[str, torch.Tensor],
+    result: LoRAApplyResult,
     calc_device: torch.device,
 ) -> None:
-    """Undo a previous LoRA application by subtracting the stored deltas.
+    """Undo a previous LoRA application by recomputing and subtracting deltas.
 
     Restores the model's parameters to their pre-LoRA state (in-place).
+    Deltas are recomputed from the cached LoRA state dicts, so no full-sized
+    delta tensors need to be kept in memory.
+    Only the affected parameters are touched — no full state_dict copy.
     """
-    if not undo_deltas:
+    lora_sds = result["lora_sds"]
+    multipliers = result["multipliers"]
+    affected_keys = result.get("affected_keys")
+    if not lora_sds or not affected_keys:
         return
 
-    logger.debug("Undoing LoRA on model (%d keys)", len(undo_deltas))
+    logger.debug("Undoing LoRA on model (%d LoRA(s), %d keys)", len(lora_sds), len(affected_keys))
     base_model = _unwrap_compiled(model)
+
+    # Build key sets for each LoRA (copy so we can mutate)
+    lora_weight_keys_list = [set(sd.keys()) for sd in lora_sds]
+
     with torch.no_grad():
-        state = base_model.state_dict()
-        for param_key, delta in undo_deltas.items():
-            state[param_key] = state[param_key] - delta.to(
-                state[param_key].device, state[param_key].dtype
-            )
-        base_model.load_state_dict(state)
+        for model_key in affected_keys:
+            param = base_model.get_parameter(model_key)
+            original_device = param.device
+            weight_on_calc = param if original_device == calc_device else param.to(calc_device)
+
+            accumulated_delta: Optional[torch.Tensor] = None
+
+            for lora_weight_keys, lora_sd, multiplier in zip(
+                lora_weight_keys_list, lora_sds, multipliers
+            ):
+                match = _match_lora_keys(model_key, lora_weight_keys)
+                if match is None:
+                    continue
+
+                down_key, up_key, alpha_key = match
+                down_weight = lora_sd[down_key]
+                up_weight = lora_sd[up_key]
+                alpha = lora_sd.get(alpha_key, down_weight.size()[0])
+
+                delta = _compute_lora_delta(
+                    weight_on_calc, down_weight, up_weight, alpha, multiplier, calc_device
+                )
+
+                if accumulated_delta is None:
+                    accumulated_delta = delta
+                else:
+                    accumulated_delta = accumulated_delta + delta.to(
+                        accumulated_delta.device, accumulated_delta.dtype
+                    )
+
+            if accumulated_delta is not None:
+                param.data.sub_(accumulated_delta.to(param.device, param.dtype))
 

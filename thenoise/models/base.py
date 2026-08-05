@@ -76,6 +76,7 @@ from tqdm import tqdm
 
 from thenoise.upscale import load_upscaler
 from thenoise.utils.lora import apply_lora_to_model, undo_lora_on_model
+from thenoise.utils.lora import LoRAApplyResult
 from thenoise.utils.pipeline_cache import PipelineCache
 from thenoise.vae import load_vae
 from thenoise.postprocess.film_grain import film_grain
@@ -153,8 +154,9 @@ class DiffusionModel(ABC):
         self.lora_dir = lora_dir
         self._lock = threading.Lock()
 
-        # LoRA state: undo deltas for clean switching
-        self._undo_deltas: Dict[str, torch.Tensor] = {}
+        # LoRA state: cached LoRA state dicts for clean switching.
+        # Stores small rank-reduced factors instead of full-sized delta tensors.
+        self._active_lora_result: Optional[LoRAApplyResult] = None
         self._active_lora_spec: Optional[str] = None
 
         # Pipeline result cache (single-entry per stage, on-device).
@@ -292,7 +294,7 @@ class DiffusionModel(ABC):
 
         logger = __import__("logging").getLogger(__name__)
         logger.info("Loading LoRA: %s", filepath)
-        return load_file(filepath, device="cpu")
+        return load_file(filepath, device=self.device)
 
     def _make_lora_spec_hash(self, lora_specs: Optional[List[str]]) -> str:
         """Create a hash string for the current LoRA configuration."""
@@ -320,10 +322,10 @@ class DiffusionModel(ABC):
         logger = __import__("logging").getLogger(__name__)
 
         # Undo any currently active LoRA
-        if self._undo_deltas:
-            logger.debug("Undoing previous LoRA (%d keys)", len(self._undo_deltas))
-            undo_lora_on_model(dit, self._undo_deltas, torch.device(self.device))
-            self._undo_deltas = {}
+        if self._active_lora_result is not None:
+            logger.debug("Undoing previous LoRA config")
+            undo_lora_on_model(dit, self._active_lora_result, torch.device(self.device))
+            self._active_lora_result = None
 
         # Apply new LoRAs
         if lora_specs and self.lora_dir is not None:
@@ -334,7 +336,7 @@ class DiffusionModel(ABC):
                 lora_sds.append(self._get_lora_sd(filename))
                 multipliers.append(weight)
 
-            self._undo_deltas = apply_lora_to_model(
+            self._active_lora_result = apply_lora_to_model(
                 dit, lora_sds, multipliers, torch.device(self.device)
             )
             active_names = ", ".join(
