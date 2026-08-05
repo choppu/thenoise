@@ -7,10 +7,8 @@ from safetensors.torch import load_file
 from accelerate.utils import set_module_tensor_to_device  # kept for potential future use
 from accelerate import init_empty_weights
 
-# fp8 dropped (bf16-only engine)
-from thenoise.utils.lora import load_safetensors_with_lora
 from thenoise.dit.anima import models as anima_models
-from thenoise.utils.safetensors import WeightTransformHooks
+from thenoise.utils.safetensors import WeightTransformHooks, load_safetensors_with_hook
 from thenoise.utils.setup_logging import setup_logging
 
 setup_logging()
@@ -26,9 +24,6 @@ def load_anima_model(
     split_attn: bool,
     loading_device: Union[str, torch.device],
     dit_weight_dtype: Optional[torch.dtype],
-    fp8_scaled: bool = False,
-    lora_weights_list: Optional[List[Dict[str, torch.Tensor]]] = None,
-    lora_multipliers: Optional[list[float]] = None,
 ) -> anima_models.Anima:
     """
     Load Anima model from the specified checkpoint.
@@ -40,10 +35,7 @@ def load_anima_model(
         split_attn (bool): Whether to use split attention.
         loading_device (Union[str, torch.device]): Device to load the model weights on.
         dit_weight_dtype (Optional[torch.dtype]): Data type of the DiT weights.
-            If None, it will be loaded as is (same as the state_dict) or scaled for fp8. if not None, model weights will be casted to this dtype.
-        fp8_scaled (bool): kept for signature compatibility; fp8 is dropped (bf16-only).
-        lora_weights_list (Optional[List[Dict[str, torch.Tensor]]]): LoRA weights to apply, if any.
-        lora_multipliers (Optional[List[float]]): LoRA multipliers for the weights, if any.
+            If None, it will be loaded as is (same as the state_dict). if not None, model weights will be casted to this dtype.
     """
     device = torch.device(device)
     loading_device = torch.device(loading_device)
@@ -86,7 +78,6 @@ def load_anima_model(
         if dit_weight_dtype is not None:
             model.to(dit_weight_dtype)
 
-    # load model weights with dynamic fp8 optimization and LoRA merging if needed
     logger.info(f"Loading DiT model from {dit_path}, device={loading_device}")
 
     def rename_hook(key: str) -> str:
@@ -100,10 +91,8 @@ def load_anima_model(
 
     rename_hooks = WeightTransformHooks(rename_hook=rename_hook)
 
-    sd = load_safetensors_with_lora(
-        model_files=dit_path,
-        lora_weights_list=lora_weights_list,
-        lora_multipliers=lora_multipliers,
+    sd = load_safetensors_with_hook(
+        model_file=dit_path,
         calc_device=device,
         move_to_device=(loading_device == device),
         dit_weight_dtype=dit_weight_dtype,

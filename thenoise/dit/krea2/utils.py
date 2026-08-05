@@ -12,8 +12,6 @@ from thenoise.dit.krea2.encoder import (
     load_qwen3_vl_conditioner,
 )
 from thenoise.dit.krea2.mmdit import SingleMMDiTConfig, SingleStreamDiT
-# fp8 dropped (bf16-only engine)
-from thenoise.utils.lora import load_safetensors_with_lora
 from thenoise.utils.safetensors import load_safetensors
 
 logger = logging.getLogger(__name__)
@@ -45,8 +43,6 @@ def load_krea2_dit(
     loading_device: Optional[Union[str, torch.device]] = None,
     attn_mode: str = "torch",
     split_attn: bool = False,
-    lora_weights: Optional[list] = None,
-    lora_multipliers: Optional[list] = None,
 ) -> SingleStreamDiT:
     """Build the K2 single-stream MMDiT on meta and load weights (assign=True).
 
@@ -61,26 +57,8 @@ def load_krea2_dit(
     with torch.device("meta"):
         dit = SingleStreamDiT(config, attn_mode=attn_mode, split_attn=split_attn)
 
-    if has_lora:
-        # Merge LoRA into the base weights, then place the merged state dict on the model.
-        sd = load_safetensors_with_lora(
-            model_files=dit_path,
-            lora_weights_list=lora_weights,
-            lora_multipliers=lora_multipliers,
-            calc_device=device,
-            move_to_device=(loading_device == device),
-            dit_weight_dtype=dtype,
-        )
-        if loading_device.type != "cpu":
-            for key in sd.keys():
-                sd[key] = sd[key].to(loading_device)
-        dit.load_state_dict(sd, strict=True, assign=True)
-    else:
-        # Load without mmap (disable_mmap=True) to avoid the official load_file's transient ~2x
-        # RAM (mmap page cache + materialized tensor), file locking, and lazy disk reads. Load
-        # directly to the target device+dtype (assign=True) so the loaded tensors become the params.
-        sd = load_safetensors(dit_path, device=loading_device, disable_mmap=True, dtype=dtype)
-        dit.load_state_dict(sd, strict=True, assign=True)
+    sd = load_safetensors(dit_path, device=loading_device, disable_mmap=True, dtype=dtype)
+    dit.load_state_dict(sd, strict=True, assign=True)
 
     return dit
 

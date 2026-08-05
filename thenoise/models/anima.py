@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 class AnimaModel(DiffusionModel):
     name = "anima"
 
-    # Model-owned defaults (incl. advanced sampler params -- not exposed to API/CLI).
-    DEFAULT_STEPS = 50
-    DEFAULT_GUIDANCE_SCALE = 3.5
+    # Defaults for the turbo version
+    DEFAULT_STEPS = 8
+    DEFAULT_GUIDANCE_SCALE = 1
     DEFAULT_WIDTH = 1024
     DEFAULT_HEIGHT = 1024
     # Matches ComfyUI's Anima sampling_settings ``shift: 3.0`` (ModelSamplingDiscreteFlow).
@@ -52,7 +52,6 @@ class AnimaModel(DiffusionModel):
             lora_dir=lora_dir,
         )
 
-        # DiT (bf16, SDPA attention) — loaded WITHOUT LoRA baked in.
         logger.info("Loading Anima DiT from %s", dit_path)
         self.dit = anima_utils.load_anima_model(
             device,
@@ -61,7 +60,6 @@ class AnimaModel(DiffusionModel):
             split_attn=True,
             loading_device=device,
             dit_weight_dtype=dtype,
-            fp8_scaled=False,
         )
         self.dit.eval().requires_grad_(False)
         self.dit = torch.compile(self.dit)

@@ -6,82 +6,18 @@ import torch
 import json
 import struct
 from typing import Dict, Any, Union, Optional
+from tqdm import tqdm
 
 from safetensors.torch import load_file
 
 from thenoise.utils.device import synchronize_device
 
+from thenoise.utils.setup_logging import setup_logging
 
-def mem_eff_save_file(tensors: Dict[str, torch.Tensor], filename: str, metadata: Dict[str, Any] = None):
-    """
-    memory efficient save file
-    """
+setup_logging()
+import logging
 
-    _TYPES = {
-        torch.float64: "F64",
-        torch.float32: "F32",
-        torch.float16: "F16",
-        torch.bfloat16: "BF16",
-        torch.int64: "I64",
-        torch.int32: "I32",
-        torch.int16: "I16",
-        torch.int8: "I8",
-        torch.uint8: "U8",
-        torch.bool: "BOOL",
-        getattr(torch, "float8_e5m2", None): "F8_E5M2",
-        getattr(torch, "float8_e4m3fn", None): "F8_E4M3",
-    }
-    _ALIGN = 256
-
-    def validate_metadata(metadata: Dict[str, Any]) -> Dict[str, str]:
-        validated = {}
-        for key, value in metadata.items():
-            if not isinstance(key, str):
-                raise ValueError(f"Metadata key must be a string, got {type(key)}")
-            if not isinstance(value, str):
-                print(f"Warning: Metadata value for key '{key}' is not a string. Converting to string.")
-                validated[key] = str(value)
-            else:
-                validated[key] = value
-        return validated
-
-    # print(f"Using memory efficient save file: {filename}")
-
-    header = {}
-    offset = 0
-    if metadata:
-        header["__metadata__"] = validate_metadata(metadata)
-    for k, v in tensors.items():
-        if v.numel() == 0:  # empty tensor
-            header[k] = {"dtype": _TYPES[v.dtype], "shape": list(v.shape), "data_offsets": [offset, offset]}
-        else:
-            size = v.numel() * v.element_size()
-            header[k] = {"dtype": _TYPES[v.dtype], "shape": list(v.shape), "data_offsets": [offset, offset + size]}
-            offset += size
-
-    hjson = json.dumps(header).encode("utf-8")
-    hjson += b" " * (-(len(hjson) + 8) % _ALIGN)
-
-    with open(filename, "wb") as f:
-        f.write(struct.pack("<Q", len(hjson)))
-        f.write(hjson)
-
-        for k, v in tensors.items():
-            if v.numel() == 0:
-                continue
-            if v.is_cuda:
-                # Direct GPU to disk save
-                with torch.cuda.device(v.device):
-                    if v.dim() == 0:  # if scalar, need to add a dimension to work with view
-                        v = v.unsqueeze(0)
-                    tensor_bytes = v.contiguous().view(torch.uint8)
-                    tensor_bytes.cpu().numpy().tofile(f)
-            else:
-                # CPU tensor save
-                if v.dim() == 0:  # if scalar, need to add a dimension to work with view
-                    v = v.unsqueeze(0)
-                v.contiguous().view(torch.uint8).numpy().tofile(f)
-
+logger = logging.getLogger(__name__)
 
 class MemoryEfficientSafeOpen:
     """Memory-efficient reader for safetensors files.
@@ -288,93 +224,6 @@ class MemoryEfficientSafeOpen:
             # Float8 not supported in this PyTorch version
             raise ValueError(f"Unsupported float8 type: {dtype_str} (upgrade PyTorch to support float8 types)")
 
-
-def load_safetensors(
-    path: str,
-    device: Union[str, torch.device],
-    disable_mmap: bool = False,
-    dtype: Optional[torch.dtype] = None,
-    disable_numpy_memmap: bool = False,
-) -> dict[str, torch.Tensor]:
-    if disable_mmap:
-        # return safetensors.torch.load(open(path, "rb").read())
-        # use experimental loader
-        # logger.info(f"Loading without mmap (experimental)")
-        state_dict = {}
-        device = torch.device(device) if device is not None else None
-        with MemoryEfficientSafeOpen(path, disable_numpy_memmap=disable_numpy_memmap) as f:
-            for key in f.keys():
-                state_dict[key] = f.get_tensor(key, device=device, dtype=dtype)
-        synchronize_device(device)
-        return state_dict
-    else:
-        try:
-            state_dict = load_file(path, device=device)
-        except:
-            state_dict = load_file(path)  # prevent device invalid Error
-        if dtype is not None:
-            for key in state_dict.keys():
-                state_dict[key] = state_dict[key].to(dtype=dtype)
-        return state_dict
-
-
-def get_split_weight_filenames(file_path: str) -> Optional[list[str]]:
-    """
-    Get the list of split weight filenames (full paths) if the file name ends with 00001-of-00004 etc.
-    Returns None if the file is not split.
-    """
-    basename = os.path.basename(file_path)
-    match = re.match(r"^(.*?)(\d+)-of-(\d+)\.safetensors$", basename)
-    if match:
-        prefix = basename[: match.start(2)]
-        count = int(match.group(3))
-        filenames = []
-        for i in range(count):
-            filename = f"{prefix}{i + 1:05d}-of-{count:05d}.safetensors"
-            filepath = os.path.join(os.path.dirname(file_path), filename)
-            if os.path.exists(filepath):
-                filenames.append(filepath)
-            else:
-                raise FileNotFoundError(f"File {filepath} not found")
-        return filenames
-    else:
-        return None
-
-
-def load_split_weights(
-    file_path: str, device: Union[str, torch.device] = "cpu", disable_mmap: bool = False, dtype: Optional[torch.dtype] = None
-) -> Dict[str, torch.Tensor]:
-    """
-    Load split weights from a file. If the file name ends with 00001-of-00004 etc, it will load all files with the same prefix.
-    dtype is as is, no conversion is done.
-    """
-    device = torch.device(device)
-
-    # if the file name ends with 00001-of-00004 etc, we need to load the files with the same prefix
-    split_filenames = get_split_weight_filenames(file_path)
-    if split_filenames is not None:
-        state_dict = {}
-        for filename in split_filenames:
-            state_dict.update(load_safetensors(filename, device=device, disable_mmap=disable_mmap, dtype=dtype))
-    else:
-        state_dict = load_safetensors(file_path, device=device, disable_mmap=disable_mmap, dtype=dtype)
-    return state_dict
-
-
-def find_key(safetensors_file: str, starts_with: Optional[str] = None, ends_with: Optional[str] = None) -> Optional[str]:
-    """
-    Find a key in a safetensors file that starts with `starts_with` and ends with `ends_with`.
-    If `starts_with` is None, it will match any key.
-    If `ends_with` is None, it will match any key.
-    Returns the first matching key or None if no key matches.
-    """
-    with MemoryEfficientSafeOpen(safetensors_file) as f:
-        for key in f.keys():
-            if (starts_with is None or key.startswith(starts_with)) and (ends_with is None or key.endswith(ends_with)):
-                return key
-    return None
-
-
 @dataclass
 class WeightTransformHooks:
     split_hook: Optional[callable] = None
@@ -476,3 +325,122 @@ class TensorWeightAdapter:
             # direct mapping
             original_key = self.new_key_to_original_key_map[new_key]
             return self.original_f.get_tensor(original_key, device=device, dtype=dtype)
+
+
+def load_safetensors(
+    path: str,
+    device: Union[str, torch.device],
+    disable_mmap: bool = False,
+    dtype: Optional[torch.dtype] = None,
+    disable_numpy_memmap: bool = False,
+) -> dict[str, torch.Tensor]:
+    if disable_mmap:
+        # return safetensors.torch.load(open(path, "rb").read())
+        # use experimental loader
+        # logger.info(f"Loading without mmap (experimental)")
+        state_dict = {}
+        device = torch.device(device) if device is not None else None
+        with MemoryEfficientSafeOpen(path, disable_numpy_memmap=disable_numpy_memmap) as f:
+            for key in f.keys():
+                state_dict[key] = f.get_tensor(key, device=device, dtype=dtype)
+        synchronize_device(device)
+        return state_dict
+    else:
+        try:
+            state_dict = load_file(path, device=device)
+        except:
+            state_dict = load_file(path)  # prevent device invalid Error
+        if dtype is not None:
+            for key in state_dict.keys():
+                state_dict[key] = state_dict[key].to(dtype=dtype)
+        return state_dict
+
+
+def load_safetensors_with_hook(
+    model_file: str,
+    calc_device: torch.device,
+    move_to_device: bool = False,
+    dit_weight_dtype: Optional[torch.dtype] = None,
+    disable_numpy_memmap: bool = False,
+    weight_transform_hooks: Optional[WeightTransformHooks] = None,
+) -> dict[str, torch.Tensor]:
+    """
+    Load state dict from safetensors files and apply the optional LoRA merge hook.
+    """
+    logger.info(
+        f"Loading state dict. Dtype of weight: {dit_weight_dtype}"
+    )
+    state_dict = {}
+    with MemoryEfficientSafeOpen(model_file, disable_numpy_memmap=disable_numpy_memmap) as original_f:
+        f = TensorWeightAdapter(weight_transform_hooks, original_f) if weight_transform_hooks is not None else original_f
+        for key in tqdm(f.keys(), desc=f"Loading {os.path.basename(model_file)}", leave=False):
+            if move_to_device:
+                value = f.get_tensor(key, device=calc_device, dtype=dit_weight_dtype)
+            else:
+                value = f.get_tensor(key)
+                if dit_weight_dtype is not None:
+                    value = value.to(dit_weight_dtype)
+
+            state_dict[key] = value
+    if move_to_device:
+        synchronize_device(calc_device)
+
+    return state_dict
+
+
+def get_split_weight_filenames(file_path: str) -> Optional[list[str]]:
+    """
+    Get the list of split weight filenames (full paths) if the file name ends with 00001-of-00004 etc.
+    Returns None if the file is not split.
+    """
+    basename = os.path.basename(file_path)
+    match = re.match(r"^(.*?)(\d+)-of-(\d+)\.safetensors$", basename)
+    if match:
+        prefix = basename[: match.start(2)]
+        count = int(match.group(3))
+        filenames = []
+        for i in range(count):
+            filename = f"{prefix}{i + 1:05d}-of-{count:05d}.safetensors"
+            filepath = os.path.join(os.path.dirname(file_path), filename)
+            if os.path.exists(filepath):
+                filenames.append(filepath)
+            else:
+                raise FileNotFoundError(f"File {filepath} not found")
+        return filenames
+    else:
+        return None
+
+
+def load_split_weights(
+    file_path: str, device: Union[str, torch.device] = "cpu", disable_mmap: bool = False, dtype: Optional[torch.dtype] = None
+) -> Dict[str, torch.Tensor]:
+    """
+    Load split weights from a file. If the file name ends with 00001-of-00004 etc, it will load all files with the same prefix.
+    dtype is as is, no conversion is done.
+    """
+    device = torch.device(device)
+
+    # if the file name ends with 00001-of-00004 etc, we need to load the files with the same prefix
+    split_filenames = get_split_weight_filenames(file_path)
+    if split_filenames is not None:
+        state_dict = {}
+        for filename in split_filenames:
+            state_dict.update(load_safetensors(filename, device=device, disable_mmap=disable_mmap, dtype=dtype))
+    else:
+        state_dict = load_safetensors(file_path, device=device, disable_mmap=disable_mmap, dtype=dtype)
+    return state_dict
+
+
+def find_key(safetensors_file: str, starts_with: Optional[str] = None, ends_with: Optional[str] = None) -> Optional[str]:
+    """
+    Find a key in a safetensors file that starts with `starts_with` and ends with `ends_with`.
+    If `starts_with` is None, it will match any key.
+    If `ends_with` is None, it will match any key.
+    Returns the first matching key or None if no key matches.
+    """
+    with MemoryEfficientSafeOpen(safetensors_file) as f:
+        for key in f.keys():
+            if (starts_with is None or key.startswith(starts_with)) and (ends_with is None or key.endswith(ends_with)):
+                return key
+    return None
+
