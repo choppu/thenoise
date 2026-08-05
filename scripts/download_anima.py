@@ -3,7 +3,7 @@
 Source: https://huggingface.co/circlestone-labs/Anima
 
   DiT      split_files/diffusion_models/anima-<variant>.safetensors
-           (variants: base-v1.0, aesthetic-v1.1, preview3-base, turbo-v1.0, ...)
+           (variants: base-v1.0, aesthetic-v1.1, turbo-v1.0, ...)
   Text enc split_files/text_encoders/qwen_3_06b_base.safetensors
   VAE      split_files/vae/qwen_image_vae.safetensors
 
@@ -22,7 +22,7 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download
 
 REPO = "circlestone-labs/Anima"
-DEFAULT_VARIANT = "aesthetic-v1.1"
+DEFAULT_VARIANT = "turbo-v1.0"
 
 
 def main() -> None:
