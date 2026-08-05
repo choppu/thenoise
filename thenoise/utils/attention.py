@@ -132,7 +132,7 @@ def attention(
         and (attn_params.attn_mode != "flash" and attn_params.attn_mode != "sageattn")
     ):
         if torch.all(attn_params.seqlens == attn_params.seqlens[0]):
-            seqlen = attn_params.seqlens[0].item()
+            seqlen = attn_params.seqlens[0]  # keep as 0-d tensor to avoid .item() graph break
             q = q[:, :seqlen]
             k = k[:, :seqlen]
             v = v[:, :seqlen]
@@ -160,9 +160,11 @@ def attention(
             attn_params = AttentionParams.create_attention_params(attn_params.attn_mode, True)  # do not in-place modify
             attn_params.seqlens = torch.tensor([q.shape[1]] * q.shape[0], device=q.device)
             attn_params.max_seqlen = q.shape[1]
-        q = [transpose_fn(q[i : i + 1, : attn_params.seqlens[i]]) for i in range(len(q))]
-        k = [transpose_fn(k[i : i + 1, : attn_params.seqlens[i]]) for i in range(len(k))]
-        v = [transpose_fn(v[i : i + 1, : attn_params.seqlens[i]]) for i in range(len(v))]
+        # Materialize seqlens as Python ints to avoid .item() graph break inside the loop
+        seqlens_list = attn_params.seqlens.tolist()
+        q = [transpose_fn(q[i : i + 1, : seqlens_list[i]]) for i in range(len(q))]
+        k = [transpose_fn(k[i : i + 1, : seqlens_list[i]]) for i in range(len(k))]
+        v = [transpose_fn(v[i : i + 1, : seqlens_list[i]]) for i in range(len(v))]
     else:
         q = transpose_fn(q)
         k = transpose_fn(k)
