@@ -76,6 +76,7 @@ from tqdm import tqdm
 
 from thenoise.upscale import load_upscaler
 from thenoise.utils.lora import apply_lora_to_model, undo_lora_on_model
+from thenoise.utils.pipeline_cache import PipelineCache
 from thenoise.vae import load_vae
 from thenoise.postprocess.film_grain import film_grain
 from thenoise.postprocess.nyquist import nyquist_notch
@@ -156,13 +157,10 @@ class DiffusionModel(ABC):
         self._undo_deltas: Dict[str, torch.Tensor] = {}
         self._active_lora_spec: Optional[str] = None
 
-        # Pipeline result cache (single-entry per stage, on-device)
-        self._cache_prompt_key: Optional[Tuple] = None
-        self._cache_prompt_value: Optional[Conditioning] = None
-        self._cache_sampling_key: Optional[Tuple] = None
-        self._cache_sampling_value: Optional[torch.Tensor] = None
-        self._cache_decode_key: Optional[Tuple] = None
-        self._cache_decode_value: Optional[torch.Tensor] = None
+        # Pipeline result cache (single-entry per stage, on-device).
+        # Uses PipelineCache for cascade invalidation with immediate release
+        # of downstream tensors when any stage is invalidated.
+        self._cache = PipelineCache()
 
         # Lazy Sesqui latent upscaler (only loaded if ``upscale`` is requested).
         self._upscaler = None
@@ -478,18 +476,17 @@ class DiffusionModel(ABC):
         # --- locked section: cache checks + model access ---
         with self._lock:
             # Stage 1: prompt conditioning
-            if self._cache_prompt_key == prompt_key:
-                cond = self._cache_prompt_value
+            if self._cache.prompt_hit(prompt_key):
+                cond = self._cache.prompt_get()
             else:
                 cond = self.encode_prompt(
                     prompt, negative_prompt, guidance_scale=guidance_scale
                 )
-                self._cache_prompt_key = prompt_key
-                self._cache_prompt_value = cond
+                self._cache.prompt_store(prompt_key, cond)
 
             # Stage 2: sampling (denoise)
-            if self._cache_sampling_key == sampling_key:
-                latents = self._cache_sampling_value
+            if self._cache.sampling_hit(sampling_key):
+                latents = self._cache.sampling_get()
             else:
                 self._apply_loras_for_generation(lora_specs)
                 with torch.no_grad():
@@ -497,12 +494,11 @@ class DiffusionModel(ABC):
                         cond, steps, height, width, seed,
                         guidance_scale, effective_sampler,
                     )
-                self._cache_sampling_key = sampling_key
-                self._cache_sampling_value = latents
+                self._cache.sampling_store(sampling_key, latents)
 
             # Stage 3/4: upscale + decode (interleaved so cache hits skip upscale)
-            if self._cache_decode_key == decode_key:
-                pixels = self._cache_decode_value
+            if self._cache.decode_hit(decode_key):
+                pixels = self._cache.decode_get()
             else:
                 # Cache miss — run upscale (if requested) then decode
                 if upscale:
@@ -510,8 +506,7 @@ class DiffusionModel(ABC):
                         latents, cond, steps, height, width, seed, guidance_scale
                     )
                 pixels = self.decode(latents)  # fp32 GPU tensor [C,H,W]
-                self._cache_decode_key = decode_key
-                self._cache_decode_value = pixels
+                self._cache.decode_store(decode_key, pixels)
 
             # Stage 5: postprocess (cheap — not cached)
             pixels = self.postprocess(
