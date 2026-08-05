@@ -342,6 +342,8 @@ class DiffusionModel(ABC):
                 self._parse_lora_spec(s)[0] for s in lora_specs
             )
             logger.info("Applied LoRA(s): %s", active_names)
+            # Workaround supposed ROCm 7.14+ bug (looks like it is using freed memory)
+            torch.cuda.empty_cache()
         else:
             logger.debug("Using base model (no LoRA)")
 
