@@ -177,7 +177,6 @@ class DiffusionModel(ABC):
             vae_path,
             device=self.device,
             disable_mmap=True,
-            disable_cache=True,
         ).to(self.dtype).eval().requires_grad_(False)
 
     # ------------------------------------------------------------------ hooks
