@@ -122,25 +122,6 @@ def attention(
     # fused (flash / mem-efficient) kernels gain native GQA support. (q/k/v here are [B, L, H, D].)
     enable_gqa = q.shape[-2] != k.shape[-2]
 
-    # If split attn is False, attention mask is provided and all sequence lengths are same, we can trim the sequence
-    seqlen_trimmed = False
-    # Trim if all seqlens are the same, for attention modes other than flash or sageattn (which can handle masks efficiently)
-    if (
-        not attn_params.split_attn
-        and attn_params.attention_mask is not None
-        and attn_params.seqlens is not None
-        and (attn_params.attn_mode != "flash" and attn_params.attn_mode != "sageattn")
-    ):
-        if torch.all(attn_params.seqlens == attn_params.seqlens[0]):
-            seqlen = attn_params.seqlens[0]  # keep as 0-d tensor to avoid .item() graph break
-            q = q[:, :seqlen]
-            k = k[:, :seqlen]
-            v = v[:, :seqlen]
-            max_seqlen = attn_params.max_seqlen
-            attn_params = AttentionParams.create_attention_params(attn_params.attn_mode, False)  # do not in-place modify
-            attn_params.max_seqlen = max_seqlen  # keep max_seqlen for padding
-            seqlen_trimmed = True
-
     # Determine tensor layout based on attention implementation
     if attn_params.attn_mode == "torch" or (
         attn_params.attn_mode == "sageattn" and (attn_params.split_attn or attn_params.cu_seqlens is None)
@@ -292,8 +273,5 @@ def attention(
 
     x = transpose_fn(x)  # [B, L, H, D]
     x = x.reshape(x.shape[0], x.shape[1], -1)  # [B, L, H*D]
-
-    if seqlen_trimmed:
-        x = torch.nn.functional.pad(x, (0, 0, 0, attn_params.max_seqlen - x.shape[1]), value=0)  # pad back to max_seqlen
 
     return x
