@@ -4,6 +4,8 @@ A text-to-image diffusion inference engine. Tested on Strix Halo and Strix Point
 
 Loads one model at a time and generates images from text prompts. Available as a CLI tool, an HTTP API (with a simple web UI).
 
+<img width="2048" height="1070" alt="thenoise-screenshot" src="https://github.com/user-attachments/assets/5731e570-efb2-43b5-8f71-b6d11d57c8aa" />
+
 ---
 
 ## Why? ComfyUI exists
