@@ -88,8 +88,33 @@ The first generation is slow because the DiT is compiled with `torch.compile` �
 see [Performance](#performance). To serve the same model over HTTP with a web UI
 instead, use `serve` (see [CLI](#cli)).
 
-### Developing on TheNoise
+## Portable (self-contained) builds
 
+For machines without a dev toolchain, CI publishes **portable** bundles — one
+directory with a standalone CPython, PyTorch ROCm, all dependencies, `thenoise`
+itself, and a bundled `clang` (so `torch.compile`/Triton JIT works with no system
+gcc). No installation, sudo, or Python needed on the target machine.
+
+- Triggered automatically on every `v*` git tag (and manually via
+  `workflow_dispatch`).
+- Built per GPU target (`gfx1151`, `gfx1150`) — see
+  `.github/workflows/build-thenoise-rocm.yml` and `scripts/build_portable.sh`.
+- The `gfx1151` bundle is GPU-qualified (a real Anima generation) before release.
+
+Download the release assets for your GPU and run:
+
+```bash
+# extract (split archives come as .partNN-of-MM.tar.gz — concatenate them first:
+#   cat *.part*.tar.gz | tar -xz
+# single archive: tar -xzf <tag>.tar.gz
+./bin/thenoise generate \
+  --dit ./models/anima/split_files/diffusion_models/anima-turbo-v1.0.safetensors \
+  --vae ./models/anima/split_files/vae/qwen_image_vae.safetensors \
+  --text-encoder ./models/anima/split_files/text_encoders/qwen_3_06b_base.safetensors \
+  --prompt "a fox walking in the snow" --steps 8 --guidance-scale 1
+```
+
+### Developing on TheNoise
 `thenoise.sh` installs the runtime dependencies only. To run the test suite,
 also install the dev extras:
 

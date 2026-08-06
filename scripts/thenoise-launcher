@@ -1,0 +1,27 @@
+#!/bin/bash
+        # thenoise — portable launcher.
+        # Runs the bundled standalone CPython against the bundled ROCm PyTorch
+        # without any system dependency. Sets LD_LIBRARY_PATH to the bundled
+        # ROCm runtime libs and points Triton's JIT compiler at the bundled
+        # clang so torch.compile works with no system gcc/headers.
+        set -euo pipefail
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        ROOT="$(dirname "$SCRIPT_DIR")"
+        SP="$(echo "$ROOT"/lib/python3.*/site-packages)"
+        # Add all bundled ROCm library paths (runtime + torch libs).
+        for libdir in "$SP"/_rocm_sdk_*/lib "$SP"/torch/lib; do
+          [ -d "$libdir" ] && LD_LIBRARY_PATH="${libdir}:${LD_LIBRARY_PATH:-}"
+        done
+        # LLVM libs for the bundled clang (Triton JIT).
+        LD_LIBRARY_PATH="$SP/_rocm_sdk_core/lib/llvm/lib:${LD_LIBRARY_PATH}"
+        export LD_LIBRARY_PATH
+        # Use the bundled clang for Triton's runtime kernel JIT (no system gcc).
+        CLANG="$SP/_rocm_sdk_core/lib/llvm/bin/clang"
+        if [ -f "$CLANG" ]; then
+          chmod +x "$CLANG" "$CLANG"-* 2>/dev/null || true
+        fi
+        export CC="$CLANG"
+        export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+        export MIOPEN_FIND_MODE=FAST
+        export TORCH_BLAS_PREFER_HIPBLASLT=1
+        exec "$SCRIPT_DIR/python3" -m thenoise "$@"

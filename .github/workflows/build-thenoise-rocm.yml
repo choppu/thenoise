@@ -1,0 +1,276 @@
+name: Build TheNoise + ROCm (portable)
+
+# Builds a relocatable "portable" thenoise bundle (standalone CPython + PyTorch
+# ROCm + all deps + thenoise + bundled clang) for each requested GPU target,
+# qualifies the gfx1151 bundle with a real generation on the dev_lab GPU box,
+# then attaches the bundles to GitHub releases. Modeled on the org's
+# vllm-rocm pipeline.
+#
+# Triggers:
+#   * every git tag matching v*  -> build + qualify + release
+#   * manual workflow_dispatch   -> build (+ release if requested)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      gfx_target:
+        description: 'AMD GPU targets (comma-separated)'
+        required: false
+        default: 'gfx1151,gfx1150'
+      create_release:
+        description: 'Create a GitHub release after successful build'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  GFX_TARGETS: ${{ github.event.inputs.gfx_target || 'gfx1151,gfx1150' }}
+
+jobs:
+  prepare-matrix:
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+      gfx_targets: ${{ steps.set.outputs.gfx_targets }}
+    steps:
+      - name: Set matrix
+        id: set
+        run: |
+          echo "gfx_targets=$GFX_TARGETS" >> "$GITHUB_OUTPUT"
+          matrix=$(echo "$GFX_TARGETS" \
+            | tr ',' '\n' \
+            | sed 's/^ *//;s/ *$//' \
+            | jq -R . \
+            | jq -s '{gfx_target:.}' \
+            | jq -c)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "Generated matrix: $matrix"
+
+  # Builds each target's portable bundle. Runs on the self-hosted dev_lab box:
+  # it needs no GPU, but AMD's wheel index allowlists that box's egress (not
+  # GitHub-hosted runner IPs). See vllm-rocm for the same constraint.
+  build:
+    needs: [prepare-matrix]
+    runs-on:
+      group: dev_lab
+      labels: [self-hosted, Linux]
+    env:
+      THENOISE_ROOT: ${{ runner.temp }}/thenoise-build/thenoise
+    strategy:
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+      fail-fast: false
+    outputs:
+      torch_version: ${{ steps.outputs.outputs.torch_version }}
+      thenoise_version: ${{ steps.outputs.outputs.thenoise_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build portable bundle
+        run: |
+          bash scripts/build_portable.sh "${{ matrix.gfx_target }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: thenoise-rocm-${{ matrix.gfx_target }}-x64
+          path: ${{ env.THENOISE_ROOT }}/
+          # CRITICAL: AMD ROCm wheels ship per-gfx GPU code objects in hidden
+          # dot-dirs (torch/.kpack/, _rocm_sdk_*/.kpack/, .devel_links/). Since
+          # v4, upload-artifact EXCLUDES hidden files by default — dropping them
+          # silently produces a bundle that loads but dies on the first kernel
+          # launch (hipErrorInvalidImage). Do not remove this.
+          include-hidden-files: true
+          retention-days: 30
+          compression-level: 6
+
+      - name: Set job outputs
+        id: outputs
+        env:
+          LD_LIBRARY_PATH: ${{ env.THENOISE_ROOT }}/lib/python3.13/site-packages/_rocm_sdk_core/lib:${{ env.THENOISE_ROOT }}/lib/python3.13/site-packages/torch/lib
+        run: |
+          PY="${{ env.THENOISE_ROOT }}/bin/python3.13"
+          tv=$("$PY" -c "import torch; print(torch.__version__)")
+          nv=$("$PY" -c "import importlib.metadata as m; print(m.version('thenoise'))")
+          echo "torch_version=$tv" >> "$GITHUB_OUTPUT"
+          echo "thenoise_version=$nv" >> "$GITHUB_OUTPUT"
+
+  # Real GPU smoke test on the gfx1151 dev_lab box: imports + GPU visibility +
+  # one end-to-end Anima generation (incl. first-run torch.compile). Runs only
+  # when gfx1151 was built; gates the gfx1151 release (and, transitively via
+  # build, is a release precondition for the whole run).
+  qualify:
+    needs: [prepare-matrix, build]
+    runs-on:
+      group: dev_lab
+      labels: [self-hosted, Linux]
+    if: contains(needs.prepare-matrix.outputs.gfx_targets, 'gfx1151')
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download gfx1151 artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          WORK="${{ runner.temp }}/thenoise-qual"
+          DEST="$WORK/bundle"; ZIP="$WORK/artifact.zip"
+          mkdir -p "$DEST"
+          # actions/download-artifact@v4 is unreliable for multi-GB artifacts on
+          # self-hosted runners; pull the zip directly with curl (resumable).
+          ART_ID=$(curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+          | python3 -c "import sys,json; print(next((a['id'] for a in json.load(sys.stdin)['artifacts'] if a['name']=='thenoise-rocm-gfx1151-x64'), ''))")
+          [ -n "$ART_ID" ] || { echo "::error::gfx1151 artifact not found"; exit 1; }
+          ok=0
+          for attempt in 1 2 3; do
+            if curl -fL --retry 5 --retry-delay 10 --retry-all-errors -C - \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                -o "$ZIP" \
+                "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/${ART_ID}/zip"; then
+              ok=1; break
+            fi
+            echo "attempt $attempt failed; retrying in 15s"; sleep 15
+          done
+          [ "$ok" = 1 ] || { echo "::error::artifact download failed"; exit 1; }
+          if command -v unzip >/dev/null 2>&1; then unzip -q -o "$ZIP" -d "$DEST"
+          else python3 -m zipfile -e "$ZIP" "$DEST"; fi
+          rm -f "$ZIP"
+          echo "Bundle: $(du -sh "$DEST" | cut -f1)"
+
+      - name: Run GPU qualification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          WORK="${{ runner.temp }}/thenoise-qual"
+          # upload-artifact archives the bundle CONTENTS at the artifact root
+          # (bin/, lib/, include/), so the bundle root is $WORK/bundle directly.
+          ROOT="$WORK/bundle"
+          MODEL_DIR="$WORK/anima"
+          mkdir -p "$MODEL_DIR"
+          bash scripts/qualify_thenoise.sh \
+            --root "$ROOT" --model-dir "$MODEL_DIR" \
+            --out "$WORK/qualification-report.json"
+
+      - name: Upload qualification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qualification-gfx1151
+          path: ${{ runner.temp }}/thenoise-qual/*.json
+          if-no-files-found: warn
+
+      - name: Clean up
+        if: always()
+        run: rm -rf "${{ runner.temp }}/thenoise-qual" || true
+
+  # Attaches each target's bundle to a release. Per-target releases (one per
+  # gfx target) avoid colliding assets and keep each hosted-runner download to a
+  # single multi-GB bundle. gfx1151's release is gated on GPU qualification; a
+  # gfx1150-only run releases on build success (qualify is 'skipped').
+  create-release:
+    needs: [prepare-matrix, build, qualify]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    strategy:
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+      fail-fast: false
+    if: |
+      always() &&
+      needs.build.result == 'success' &&
+      (needs.qualify.result == 'success' || needs.qualify.result == 'skipped') &&
+      (
+        github.event_name == 'push' ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          (github.event.inputs.create_release == 'true' || github.event.inputs.create_release == null)
+        )
+      )
+    steps:
+      - name: Download build artifact for ${{ matrix.gfx_target }}
+        uses: actions/download-artifact@v4
+        with:
+          name: thenoise-rocm-${{ matrix.gfx_target }}-x64
+          path: ./artifact
+
+      - name: Generate release tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TARGET="${{ matrix.gfx_target }}"
+          ROCM=$(echo "${{ needs.build.outputs.torch_version }}" | grep -oP 'rocm[\d.]+' || echo rocm)
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # Tag push: name releases after the pushed tag, suffixed per target
+            # so a single version yields distinct gfx1151/gfx1150 releases.
+            TAG="${{ github.ref_name }}-${TARGET}"
+          else
+            TAG="thenoise${{ needs.build.outputs.thenoise_version }}-${ROCM}-${TARGET}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Generated release tag: $TAG"
+
+      - name: Create archive (split if >1.9 GB for GitHub release limit)
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          base="${TAG}-x64"
+          echo "Creating: ${base}.tar.gz"
+          tar -czf "${base}.tar.gz" -C ./artifact .
+          size_mb=$(du -m "${base}.tar.gz" | cut -f1)
+          echo "Archive size: ${size_mb} MB"
+          if [ "$size_mb" -gt 1900 ]; then
+            echo "Splitting into parts..."
+            split -b 1900M --numeric-suffixes=1 -a 2 --additional-suffix=.tar.gz \
+              "${base}.tar.gz" "${base}.part"
+            rm "${base}.tar.gz"
+            parts=( "${base}".part*.tar.gz )
+            total=${#parts[@]}; total_padded=$(printf "%02d" "$total")
+            for f in "${parts[@]}"; do
+              nn="${f##*.part}"; nn="${nn%%.tar.gz}"
+              mv "$f" "${base}.part${nn}-of-${total_padded}.tar.gz"
+            done
+            echo "$total" > "${base}.partcount"
+          fi
+          ls -la "${base}".* 2>/dev/null || true
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          TARGET="${{ matrix.gfx_target }}"
+          upload_files=$(ls -1 *.tar.gz *.partcount 2>/dev/null | tr '\n' ' ')
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "**GPU Target**: $TARGET
+          **TheNoise Version**: ${{ needs.build.outputs.thenoise_version }}
+          **PyTorch Version**: ${{ needs.build.outputs.torch_version }}
+          **Build Date**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+          Portable TheNoise build for $TARGET. Includes bundled Python, PyTorch ROCm, ROCm runtime and clang. No separate installation required. Run with \`./bin/thenoise\`." \
+            $upload_files
+
+      - name: Attach qualification report to release (gfx1151)
+        if: matrix.gfx_target == 'gfx1151'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          rm -rf qual && mkdir -p qual
+          if ! gh run download "${{ github.run_id }}" -n qualification-gfx1151 -D qual --repo "${{ github.repository }}"; then
+            echo "::warning::qualification artifact not found; skipping attach"; exit 0
+          fi
+          if [ -f qual/qualification-report.json ]; then
+            cp qual/qualification-report.json "qualification-report-${TAG}.json"
+            gh release upload "$TAG" "qualification-report-${TAG}.json" --clobber
+          fi
