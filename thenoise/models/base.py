@@ -154,6 +154,8 @@ class DiffusionModel(ABC):
         self.lora_dir = lora_dir
         self._lock = threading.Lock()
 
+        torch._dynamo.config.recompile_limit = 64
+
         # LoRA state: cached LoRA state dicts for clean switching.
         # Stores small rank-reduced factors instead of full-sized delta tensors.
         self._active_lora_result: Optional[LoRAApplyResult] = None

@@ -57,6 +57,13 @@ def load_krea2_dit(
         dit = SingleStreamDiT(config, attn_mode=attn_mode, split_attn=split_attn)
 
     sd = load_safetensors(dit_path, device=loading_device, disable_mmap=True, dtype=dtype)
+
+    # Some older Krea 2 checkpoints carry leftover ``last.down.*`` / ``last.up.*`` keys.
+    # These are unused — drop them so the strict load still passes.
+    sd = {
+        k: v for k, v in sd.items() if not k.startswith(("last.down", "last.up"))
+    }
+
     dit.load_state_dict(sd, strict=True, assign=True)
 
     return dit

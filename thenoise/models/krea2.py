@@ -66,7 +66,6 @@ class Krea2Model(DiffusionModel):
             attn_mode="torch",  # SDPA
         )
         self.dit.eval().requires_grad_(False)
-        self.dit = torch.compile(self.dit)
 
         logger.info("Loading Krea 2 text encoder from %s", text_encoder_path)
         self.encoder = krea2_utils.load_krea2_text_encoder(
