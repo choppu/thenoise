@@ -308,8 +308,16 @@ class QwenImageAttentionBlock(nn.Module):
         qkv = qkv.permute(0, 1, 3, 2).contiguous()
         q, k, v = qkv.chunk(3, dim=-1)
 
-        # apply attention
-        x = F.scaled_dot_product_attention(q, k, v)
+        # Manual single-head attention instead of ``F.scaled_dot_product_attention``.
+        #
+        # On ROCm 7.14+ the fused SDPA backends (flash and memory-efficient) produce
+        # localized broken-pixel artifacts in this VAE decoder (the math backend and
+        # this manual implementation are both clean). We keep it in the module dtype 
+        # (bf16) for speed; the tradeoff is an O(seq^2) attention matrix.
+        scale = channels ** 0.5  # SDPA default scale = 1/sqrt(head_dim)
+        attn = (q @ k.transpose(-2, -1)) / scale
+        attn = attn.softmax(dim=-1)
+        x = attn @ v
 
         x = x.squeeze(1).permute(0, 2, 1).reshape(batch_size * time, channels, height, width)
 
