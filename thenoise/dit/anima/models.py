@@ -122,6 +122,7 @@ class RMSNorm(torch.nn.Module):
     def _norm(self, x: torch.Tensor) -> torch.Tensor:
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
+    @torch.compile(fullgraph=True)
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         with torch.autocast(device_type=x.device.type, dtype=torch.float32):
             output = self._norm(x.float()).type_as(x)
@@ -336,6 +337,7 @@ class VideoRopePosition3DEmb(VideoPositionEmb):
         self.dim_spatial_range = torch.arange(0, dim_h, 2)[: (dim_h // 2)].float().to(self.dim_spatial_range.device) / dim_h
         self.dim_temporal_range = torch.arange(0, dim_t, 2)[: (dim_t // 2)].float().to(self.dim_spatial_range.device) / dim_t
 
+    @torch.compile(fullgraph=True)
     def generate_embeddings(
         self,
         B_T_H_W_C: torch.Size,
@@ -622,6 +624,7 @@ class FinalLayer(nn.Module):
 
         self.layer_norm.reset_parameters()
 
+    @torch.compile(fullgraph=True)
     def forward(
         self,
         x_B_T_H_W_D: torch.Tensor,
@@ -830,6 +833,7 @@ class Block(nn.Module):
 
         return x_B_T_H_W_D
 
+    @torch.compile(fullgraph=True)
     def forward(
         self,
         x_B_T_H_W_D: torch.Tensor,

@@ -6,8 +6,7 @@ Guidance for AI coding agents working in this repository.
 
 `thenoise` is a focused diffusion inference engine for ROCm (Strix Halo /
 gfx1151, RDNA 3.5, native BF16/FP16, 128GB unified RAM). It loads **one model at
-a time** and exposes a small, explicit surface rather than a full framework like
-ComfyUI.
+a time** and exposes a small, explicit surface.
 
 - **Layout**:
   - `thenoise/` — server package: `__main__.py` + `cli.py` (CLI entrypoints),
@@ -29,7 +28,11 @@ ComfyUI.
    cannot run the project with real models — there is no GPU and not enough RAM.
    Do not attempt to start the server, run `generate`, or load a model.
 
-3. **When unsure on the correct way to proceed, ask the user** rather than guessing or overthinking.
+3. **When unsure on the correct way to proceed, ALWAYS ask the user** rather than 
+   guessing or overthinking.
+
+4. **The user is happy to test.** Do not be too afraid of breaking stuff, just
+   inform the user of potentially risky changes and ask them to test them out.
 
 ## Workflow
 

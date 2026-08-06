@@ -57,12 +57,11 @@ class AnimaModel(DiffusionModel):
             device,
             dit_path,
             attn_mode="torch",
-            split_attn=True,
+            split_attn=False,
             loading_device=device,
             dit_weight_dtype=dtype,
         )
         self.dit.eval().requires_grad_(False)
-        self.dit = torch.compile(self.dit)
 
         # Text encoder (Qwen3-0.6B) + tokenizers.
         logger.info("Loading Anima text encoder from %s", text_encoder_path)
