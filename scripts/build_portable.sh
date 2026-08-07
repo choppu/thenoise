@@ -49,6 +49,33 @@ pip_deep() {
   "$PY" -c 'import sys; sys.setrecursionlimit(20000); from pip._internal.cli.main import main; sys.exit(main(sys.argv[1:]))' "$@"
 }
 
+# ROCm wheel packages (e.g. rocm-sdk-core, which ships the HIP runtime) install
+# ONLY versioned shared libraries (libamdhip64.so.7) with no unversioned
+# libfoo.so dev symlink — that symlink normally comes from a system ROCm -dev
+# package, so a relocatable wheel bundle is missing it. Consumers expect the
+# bare name: torch's ctypes.CDLL("libamdhip64.so"), Triton's driver.py, and the
+# precompiled hip_utils glue (which bakes the bare name into the C source). So
+# create libfoo.so -> libfoo.so.<N> symlinks for every versioned library.
+ensure_soname_symlinks() {
+  local libdir
+  for libdir in "$SP_DIR"/_rocm_sdk_*/lib "$SP_DIR"/torch/lib; do
+    [ -d "$libdir" ] || continue
+    # Process highest version first so the highest soname wins if a lib ships
+    # multiple versions, and skip any lib that already has a symlink.
+    local name base f
+    for f in $(find "$libdir" -maxdepth 1 -name 'lib*.so.*' -printf '%p\n' 2>/dev/null | sort -Vr); do
+      [ -e "$f" ] || continue
+      name="${f##*/}"                 # libamdhip64.so.7
+      base="${name%.so.*}.so"         # libamdhip64.so
+      if [ -e "$libdir/$base" ] || [ -L "$libdir/$base" ]; then
+        continue
+      fi
+      ln -s "$name" "$libdir/$base"
+      say "linked $base -> $name"
+    done
+  done
+}
+
 # ---------------------------------------------------------------- 1. Python --
 say "Downloading portable CPython ${PBS_PY} (${PBS_TAG})"
 PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/cpython-${PBS_PY}+${PBS_TAG}-x86_64-unknown-linux-gnu-install_only.tar.gz"
@@ -86,6 +113,13 @@ torch==$TORCH_VER
 torchvision==$TORCHVISION_VER
 EOF
 pip_deep install --constraint /tmp/thenoise-constraints.txt "$REPO_ROOT"
+
+# ROCm wheels ship only versioned .so files (libfoo.so.N) without the unversioned
+# libfoo.so dev symlinks consumers rely on. Create them now so the bundle is
+# self-consistent (see ensure_soname_symlinks below).
+say "Ensuring unversioned .so symlinks (libfoo.so -> libfoo.so.N)"
+ensure_soname_symlinks
+
 
 # ------------------------------------------------- 3. precompile Triton glue --
 # Triton's ROCm backend JIT-compiles a small C module (hip_utils) from
