@@ -169,18 +169,15 @@ jobs:
         if: always()
         run: rm -rf "${{ runner.temp }}/thenoise-qual" || true
 
-  # Attaches each target's bundle to a release. Per-target releases (one per
-  # gfx target) avoid colliding assets and keep each hosted-runner download to a
-  # single multi-GB bundle. gfx1151's release is gated on GPU qualification; a
-  # gfx1150-only run releases on build success (qualify is 'skipped').
+  # Attaches every target's bundle to a single release named after the tag. All
+  # gfx-target archives are uploaded together; gfx1151's release is gated on GPU
+  # qualification (a gfx1150-only run releases on build success, qualify is
+  # 'skipped').
   create-release:
     needs: [prepare-matrix, build, qualify]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
-    strategy:
-      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
-      fail-fast: false
     if: |
       always() &&
       needs.build.result == 'success' &&
@@ -193,72 +190,75 @@ jobs:
         )
       )
     steps:
-      - name: Download build artifact for ${{ matrix.gfx_target }}
+      - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: thenoise-rocm-${{ matrix.gfx_target }}-x64
-          path: ./artifact
+          path: ./artifacts
 
       - name: Generate release tag
         id: tag
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TARGET="${{ matrix.gfx_target }}"
-          ROCM=$(echo "${{ needs.build.outputs.torch_version }}" | grep -oP 'rocm[\d.]+' || echo rocm)
           if [ "${{ github.event_name }}" = "push" ]; then
-            # Tag push: name releases after the pushed tag, suffixed per target
-            # so a single version yields distinct gfx1151/gfx1150 releases.
-            TAG="${{ github.ref_name }}-${TARGET}"
+            # Tag push: name the single release after the pushed tag.
+            TAG="${{ github.ref_name }}"
           else
-            TAG="thenoise${{ needs.build.outputs.thenoise_version }}-${ROCM}-${TARGET}"
+            TAG="v${{ needs.build.outputs.thenoise_version }}"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Generated release tag: $TAG"
 
-      - name: Create archive (split if >1.9 GB for GitHub release limit)
+      - name: Create archive per target (split if >1.9 GB for GitHub release limit)
+        env:
+          GFX_TARGETS: ${{ needs.prepare-matrix.outputs.gfx_targets }}
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          base="${TAG}-x64"
-          echo "Creating: ${base}.tar.gz"
-          tar -czf "${base}.tar.gz" -C ./artifact .
-          size_mb=$(du -m "${base}.tar.gz" | cut -f1)
-          echo "Archive size: ${size_mb} MB"
-          if [ "$size_mb" -gt 1900 ]; then
-            echo "Splitting into parts..."
-            split -b 1900M --numeric-suffixes=1 -a 2 --additional-suffix=.tar.gz \
-              "${base}.tar.gz" "${base}.part"
-            rm "${base}.tar.gz"
-            parts=( "${base}".part*.tar.gz )
-            total=${#parts[@]}; total_padded=$(printf "%02d" "$total")
-            for f in "${parts[@]}"; do
-              nn="${f##*.part}"; nn="${nn%%.tar.gz}"
-              mv "$f" "${base}.part${nn}-of-${total_padded}.tar.gz"
-            done
-            echo "$total" > "${base}.partcount"
-          fi
-          ls -la "${base}".* 2>/dev/null || true
+          upload_files=""
+          for target in $(echo "$GFX_TARGETS" | tr ',' ' '); do
+            target_dir="./artifacts/thenoise-rocm-${target}-x64"
+            [ -d "$target_dir" ] || { echo "::warning::artifact for ${target} not found; skipping"; continue; }
+            base="${TAG}-${target}-x64"
+            echo "Creating: ${base}.tar.gz"
+            tar -czf "${base}.tar.gz" -C "$target_dir" .
+            size_mb=$(du -m "${base}.tar.gz" | cut -f1)
+            echo "Archive size: ${size_mb} MB"
+            if [ "$size_mb" -gt 1900 ]; then
+              echo "Splitting into parts..."
+              split -b 1900M --numeric-suffixes=1 -a 2 --additional-suffix=.tar.gz \
+                "${base}.tar.gz" "${base}.part"
+              rm "${base}.tar.gz"
+              parts=( "${base}".part*.tar.gz )
+              total=${#parts[@]}; total_padded=$(printf "%02d" "$total")
+              for f in "${parts[@]}"; do
+                nn="${f##*.part}"; nn="${nn%%.tar.gz}"
+                mv "$f" "${base}.part${nn}-of-${total_padded}.tar.gz"
+              done
+              echo "$total" > "${base}.partcount"
+            fi
+            upload_files="${upload_files} ${base}".*
+          done
+          ls -la ${upload_files} 2>/dev/null || true
+          echo "UPLOAD_FILES=$upload_files" >> "$GITHUB_ENV"
 
       - name: Create Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          TARGET="${{ matrix.gfx_target }}"
-          upload_files=$(ls -1 *.tar.gz *.partcount 2>/dev/null | tr '\n' ' ')
+          # shellcheck disable=SC2086
           gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$TAG" \
             --title "$TAG" \
-            --notes "**GPU Target**: $TARGET
+            --notes "**GPU Targets**: ${{ needs.prepare-matrix.outputs.gfx_targets }}
           **TheNoise Version**: ${{ needs.build.outputs.thenoise_version }}
           **PyTorch Version**: ${{ needs.build.outputs.torch_version }}
           **Build Date**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
-          Portable TheNoise build for $TARGET. Includes bundled Python, PyTorch ROCm, ROCm runtime and clang. No separate installation required. Run with \`./bin/thenoise\`." \
-            $upload_files
+          Portable TheNoise builds for all GPU targets above. Includes bundled Python, PyTorch ROCm, ROCm runtime and clang. No separate installation required. Run with \`./bin/thenoise\`." \
+            $UPLOAD_FILES
 
       - name: Attach qualification report to release (gfx1151)
-        if: matrix.gfx_target == 'gfx1151'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
