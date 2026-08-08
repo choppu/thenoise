@@ -13,7 +13,8 @@ from __future__ import annotations
 import io
 import logging
 import os
-from typing import List, Optional
+import base64
+from typing import List, Literal, Optional
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, Response
@@ -42,6 +43,7 @@ class Text2ImageRequest(BaseModel):
     film_grain: float = 0.0
     sharpening: float = 0.0
     lora_specs: Optional[List[str]] = None  # ["filename.safetensors:0.8", ...]
+    out: Literal["png", "json"] = "png"
 
 
 def create_app(runtime) -> FastAPI:
@@ -84,8 +86,12 @@ def create_app(runtime) -> FastAPI:
 
         buf = io.BytesIO()
         image.save(buf, format="PNG", pnginfo=getattr(image, "_pnginfo", None))
+        content = buf.getvalue()
+
+        if req.out == "json":
+            return {"b64_json": base64.b64encode(content).decode("ascii")}
         return Response(
-            content=buf.getvalue(),
+            content=content,
             media_type="image/png",
         )
 
