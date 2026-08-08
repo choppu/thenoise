@@ -12,7 +12,7 @@
 # Triton precompile).
 #
 # Usage: build_portable.sh <gfx_target>
-#   gfx_target: gfx1151 | gfx1150
+#   gfx_target: gfx1151 | gfx1150 | gfx1152
 #
 # Environment overrides (all optional):
 #   THENOISE_ROOT   output bundle root  (default: $RUNNER_TEMP/thenoise-build/thenoise)

@@ -19,7 +19,7 @@ on:
       gfx_target:
         description: 'AMD GPU targets (comma-separated)'
         required: false
-        default: 'gfx1151,gfx1150'
+        default: 'gfx1151,gfx1150,gfx1152'
       create_release:
         description: 'Create a GitHub release after successful build'
         required: false
@@ -27,7 +27,7 @@ on:
         type: boolean
 
 env:
-  GFX_TARGETS: ${{ github.event.inputs.gfx_target || 'gfx1151,gfx1150' }}
+  GFX_TARGETS: ${{ github.event.inputs.gfx_target || 'gfx1151,gfx1150,gfx1152' }}
 
 jobs:
   prepare-matrix:
@@ -200,12 +200,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            # Tag push: name the single release after the pushed tag.
-            TAG="${{ github.ref_name }}"
-          else
-            TAG="v${{ needs.build.outputs.thenoise_version }}"
-          fi
+          # Release tag follows the canonical scheme regardless of trigger:
+          # thenoise-<version>-rocm<rocm> (e.g. thenoise-0.1.0-rocm7.14.0).
+          # For a tag push, the pushed v* tag is just the trigger — the actual
+          # release tag is derived from the build outputs.
+          VERSION="${{ needs.build.outputs.thenoise_version }}"
+          TV="${{ needs.build.outputs.torch_version }}"
+          ROCM=$(printf '%s' "$TV" | grep -oP 'rocm[\d.]+' || echo rocm)
+          TAG="thenoise-${VERSION}-${ROCM}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Generated release tag: $TAG"
 
@@ -249,7 +251,7 @@ jobs:
           # shellcheck disable=SC2086
           gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$TAG" \
-            --title "$TAG" \
+            --title "v${{ needs.build.outputs.thenoise_version }}" \
             --notes "**GPU Targets**: ${{ needs.prepare-matrix.outputs.gfx_targets }}
           **TheNoise Version**: ${{ needs.build.outputs.thenoise_version }}
           **PyTorch Version**: ${{ needs.build.outputs.torch_version }}

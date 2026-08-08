@@ -56,10 +56,10 @@ Subsequent runs skip the torch install (detected via `import torch`).
 
 By default the script targets `gfx1151` (Strix Halo). Override with the
 `GFX_ARCH` environment variable, which applies to every `./thenoise.sh`
-invocation:
+invocation. Supported targets are `gfx1150`, `gfx1151`, and `gfx1152`:
 
 ```bash
-GFX_ARCH=gfx1150 ./thenoise.sh --help
+GFX_ARCH=gfx1152 ./thenoise.sh --help
 ```
 
 ### 4. Download a model
@@ -97,9 +97,7 @@ directory with a standalone CPython, PyTorch ROCm, all dependencies, `thenoise`
 itself, and a bundled `clang` (so `torch.compile`/Triton JIT works with no system
 gcc). No installation, sudo, or Python needed on the target machine.
 
-- Triggered automatically on every `v*` git tag (and manually via
-  `workflow_dispatch`).
-- Built per GPU target (`gfx1151`, `gfx1150`) — see
+- Built per GPU target (`gfx1151`, `gfx1150`, `gfx1152`) — see
   `.github/workflows/build-thenoise-rocm.yml` and `scripts/build_portable.sh`.
 - The `gfx1151` bundle is GPU-qualified (a real Anima generation) before release.
 

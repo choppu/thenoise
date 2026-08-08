@@ -23,8 +23,9 @@
 # Mirrors the "Generate release tag" + "Create archive (split if >1.9 GB ...)"
 # steps in .github/workflows/build-thenoise-rocm.yml. Outputs (in the current
 # working directory, one per bundle):
-#   <tag>-x64.tar.gz                           (single archive if <= SPLIT_MB)
-#   <tag>-x64.partNN-of-TT.tar.gz + .partcount (if larger; GitHub release limit)
+#   <tag>-<gfx>-x64.tar.gz                           (single archive if <= SPLIT_MB)
+#   <tag>-<gfx>-x64.partNN-of-TT.tar.gz + .partcount (if larger; GitHub release limit)
+# where <tag> is the release tag (thenoise-<version>-rocm<rocm>).
 set -euo pipefail
 
 ROOT="${1:-${THENOISE_ROOT:-}}"
@@ -58,10 +59,11 @@ package_bundle() {
   torch_version=$("$PY" -c "import torch; print(torch.__version__)")
   rocm="$(printf '%s' "$torch_version" | grep -oP 'rocm[\d.]+' || echo rocm)"
 
-  # Manual (workflow_dispatch) release-tag scheme.
+  # Release tag scheme (matches CI): thenoise-<version>-rocm<rocm>. The gfx
+  # target is NOT part of the tag — it only distinguishes the archive files.
   local tag base
-  tag="thenoise-${thenoise_version}-${rocm}-${gfx}"
-  base="${tag}-x64"
+  tag="thenoise-${thenoise_version}-${rocm}"
+  base="${tag}-${gfx}-x64"
 
   say "Bundle root:  $bundle"
   say "TheNoise:     $thenoise_version"
