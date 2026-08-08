@@ -10,7 +10,12 @@ from einops import rearrange
 
 from thenoise.dit.krea2 import utils as krea2_utils
 from thenoise.dit.krea2.sampling import encode_prompts, prepare, roundup, timesteps
-from thenoise.models.base import Conditioning, DiffusionModel, Step
+from thenoise.models.base import (
+    Conditioning,
+    DiffusionModel,
+    Step,
+    normalize_keys,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +38,15 @@ class Krea2Model(DiffusionModel):
 
     @staticmethod
     def detect(f) -> bool:
-        """True if this handle is the Krea2 (single-stream MMDiT) DiT."""
-        keys = f.keys()
+        """True if this handle is the Krea2 (single-stream MMDiT) DiT.
+
+        Krea2's distinctive blocks are the text-fusion stream (``txtfusion.``)
+        and text-MLP stream (``txtmlp.``). Repackaged checkpoints (e.g. ComfyUI
+        exports) prefix every key with a generic wrapper such as
+        ``model.diffusion_model.``, so keys are normalized first and the match
+        is done on the architecture signature, not the raw prefix.
+        """
+        keys = list(normalize_keys(f.keys()))
         has_txtfusion = any(k.startswith("txtfusion.") for k in keys)
         has_txtmlp = any(k.startswith("txtmlp.") for k in keys)
         return has_txtfusion and has_txtmlp

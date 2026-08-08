@@ -78,6 +78,7 @@ from thenoise.upscale import load_upscaler
 from thenoise.utils.lora import apply_lora_to_model, undo_lora_on_model
 from thenoise.utils.lora import LoRAApplyResult
 from thenoise.utils.pipeline_cache import PipelineCache
+from thenoise.utils.safetensors import WRAP_PREFIXES
 from thenoise.vae import load_vae
 from thenoise.postprocess.film_grain import film_grain
 from thenoise.postprocess.nyquist import nyquist_notch
@@ -97,6 +98,30 @@ class Conditioning:
     cond_mask: Optional[torch.Tensor] = None
     null: Optional[torch.Tensor] = None
     null_mask: Optional[torch.Tensor] = None
+
+
+# Generic wrapper prefixes that repackagings (e.g. ComfyUI's "diffusion_model"
+# export) prepend to *every* tensor name. Detection must strip these before
+# matching on an architecture signature, otherwise a repackaged checkpoint is
+# misidentified. The canonical list lives in ``thenoise.utils.safetensors``
+# (shared with ``strip_wrap_prefixes`` used at load time) so detection and
+# loading stay in sync.
+
+
+def normalize_keys(keys):
+    """Yield tensor names with any generic wrapper prefix stripped.
+
+    Repackaged checkpoints often prefix every key with a shared wrapper such as
+    ``model.diffusion_model.`` (ComfyUI) or ``net.``. Stripping it lets each
+    ``detect`` match on the model's *own* distinctive key paths regardless of
+    the wrapper, so raw and repackaged checkpoints resolve identically.
+    """
+    for k in keys:
+        for p in WRAP_PREFIXES:
+            if k.startswith(p):
+                k = k[len(p):]
+                break
+        yield k
 
 
 @dataclass

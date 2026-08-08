@@ -12,7 +12,7 @@ from thenoise.dit.krea2.encoder import (
     load_qwen3_vl_conditioner,
 )
 from thenoise.dit.krea2.mmdit import SingleMMDiTConfig, SingleStreamDiT
-from thenoise.utils.safetensors import load_safetensors
+from thenoise.utils.safetensors import load_dit_safetensors
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +56,15 @@ def load_krea2_dit(
     with torch.device("meta"):
         dit = SingleStreamDiT(config, attn_mode=attn_mode, split_attn=split_attn)
 
-    sd = load_safetensors(dit_path, device=loading_device, disable_mmap=True, dtype=dtype)
-
-    # Some older Krea 2 checkpoints carry leftover ``last.down.*`` / ``last.up.*`` keys.
-    # These are unused — drop them so the strict load still passes.
-    sd = {
-        k: v for k, v in sd.items() if not k.startswith(("last.down", "last.up"))
-    }
+    sd = load_dit_safetensors(
+        dit_path,
+        device=loading_device,
+        disable_mmap=True,
+        dtype=dtype,
+        # Some older Krea 2 checkpoints carry leftover unused ``last.down.*`` /
+        # ``last.up.*`` keys — drop them so the strict load still passes.
+        drop_keys=("last.down", "last.up"),
+    )
 
     dit.load_state_dict(sd, strict=True, assign=True)
 

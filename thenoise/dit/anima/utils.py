@@ -7,7 +7,7 @@ from safetensors.torch import load_file
 from accelerate import init_empty_weights
 
 from thenoise.dit.anima import models as anima_models
-from thenoise.utils.safetensors import WeightTransformHooks, load_safetensors_with_hook
+from thenoise.utils.safetensors import load_dit_safetensors
 from thenoise.utils.setup_logging import setup_logging
 
 setup_logging()
@@ -79,23 +79,11 @@ def load_anima_model(
 
     logger.info(f"Loading DiT model from {dit_path}, device={loading_device}")
 
-    def rename_hook(key: str) -> str:
-        # Rename keys to remove "net." prefix for anima-base-v1.0.safetensors and previous versions
-        if key.startswith("net."):
-            return key[len("net.") :]
-        # Also remove "model.diffusion_model." prefix for anima-aesthetics-v1.0.safetensors and later versions
-        if key.startswith("model.diffusion_model."):
-            return key[len("model.diffusion_model.") :]
-        return key
-
-    rename_hooks = WeightTransformHooks(rename_hook=rename_hook)
-
-    sd = load_safetensors_with_hook(
-        model_file=dit_path,
-        calc_device=device,
-        move_to_device=(loading_device == device),
-        dit_weight_dtype=dit_weight_dtype,
-        weight_transform_hooks=rename_hooks,
+    sd = load_dit_safetensors(
+        dit_path,
+        device=loading_device,
+        disable_mmap=True,
+        dtype=dit_weight_dtype,
     )
 
     missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)

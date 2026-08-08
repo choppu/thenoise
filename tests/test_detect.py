@@ -26,7 +26,15 @@ class _FakeHandle:
 
 _ANIMA_KEYS = [
     "model.diffusion_model.blocks.0.adaln_modulation_self_attn.1.weight",
+    "model.diffusion_model.llm_adapter.layers.0.weight",
     "model.diffusion_model.x_embedder.linear.weight",
+]
+
+# A transformer DiT with adaln modulation but WITHOUT Anima's LLM adapter —
+# e.g. a generic adaLN-style block. Must NOT be claimed as Anima.
+_ADALN_ONLY_KEYS = [
+    "model.diffusion_model.blocks.0.adaln_modulation_self_attn.1.weight",
+    "model.diffusion_model.blocks.0.mlp.gate.weight",
 ]
 
 _KREA2_KEYS = [
@@ -41,6 +49,11 @@ def test_anima_detect_true():
     assert AnimaModel.detect(_FakeHandle(_ANIMA_KEYS)) is True
 
 
+def test_anima_rejects_adaln_without_llm_adapter():
+    # adaln modulation alone is not enough — Anima requires its LLM adapter.
+    assert AnimaModel.detect(_FakeHandle(_ADALN_ONLY_KEYS)) is False
+
+
 def test_krea2_detect_true():
     assert Krea2Model.detect(_FakeHandle(_KREA2_KEYS)) is True
 
@@ -51,6 +64,31 @@ def test_krea2_rejects_anima_keys():
 
 def test_anima_rejects_krea2_keys():
     assert AnimaModel.detect(_FakeHandle(_KREA2_KEYS)) is False
+
+
+# A Krea2 checkpoint repackaged under ComfyUI's generic "model.diffusion_model."
+# wrapper. The prefix is NOT a Krea2/Anima signature — it must be stripped
+# before matching, otherwise Krea2 fails and Anima false-positives on it.
+_KREA2_WRAPPED_KEYS = [
+    "model.diffusion_model.x_embedder.linear.weight",
+    "model.diffusion_model.txtfusion.layerwise_blocks.0.attn.q_proj.weight",
+    "model.diffusion_model.blocks.0.mod.lin.weight",
+    "model.diffusion_model.txtmlp.1.weight",
+]
+
+
+def test_krea2_detect_true_on_wrapped_repackaged_keys():
+    assert Krea2Model.detect(_FakeHandle(_KREA2_WRAPPED_KEYS)) is True
+
+
+def test_anima_does_not_false_positive_on_wrapped_krea2_keys():
+    assert AnimaModel.detect(_FakeHandle(_KREA2_WRAPPED_KEYS)) is False
+
+
+def test_resolve_wrapped_krea2(tmp_path):
+    p = tmp_path / "krea2-wrapped.safetensors"
+    _write_safetensors(p, _KREA2_WRAPPED_KEYS)
+    assert resolve(str(p)) is Krea2Model
 
 
 def _write_safetensors(path: Path, keys: dict) -> None:

@@ -9,7 +9,12 @@ import torch
 from thenoise.dit.anima import utils as anima_utils
 from thenoise.dit.anima import sampling as anima_sampling
 from thenoise.dit.anima.strategy import AnimaTextEncodingStrategy, AnimaTokenizeStrategy
-from thenoise.models.base import Conditioning, DiffusionModel, Step
+from thenoise.models.base import (
+    Conditioning,
+    DiffusionModel,
+    Step,
+    normalize_keys,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +32,20 @@ class AnimaModel(DiffusionModel):
 
     @staticmethod
     def detect(f) -> bool:
-        """True if this handle is the Anima DiT."""
-        keys = f.keys()
-        return any(k.startswith("net.") for k in keys) or any(
-            k.startswith("model.diffusion_model.") for k in keys
-        )
+        """True if this handle is the Anima DiT.
+
+        Anima (Cosmos-Predict2) is uniquely identified by its LLM adapter
+        (``llm_adapter.``) combined with adaln-modulated transformer blocks
+        (``adaln_modulation``). We deliberately do NOT match on generic wrapper
+        prefixes (``net.`` / ``model.diffusion_model.``) or generic attention
+        names (``cross_attn``/``self_attn``) — those are shared across many
+        model families and would falsely claim repackaged checkpoints of other
+        models. Keys are normalized, then matched on Anima's own signature.
+        """
+        keys = list(normalize_keys(f.keys()))
+        has_llm_adapter = any("llm_adapter" in k for k in keys)
+        has_adaln = any("adaln_modulation" in k for k in keys)
+        return has_llm_adapter and has_adaln
 
     def __init__(
         self,

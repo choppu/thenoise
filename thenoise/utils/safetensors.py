@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 import os
 import re
 import numpy as np
@@ -6,7 +5,6 @@ import torch
 import json
 import struct
 from typing import Dict, Any, Union, Optional
-from tqdm import tqdm
 
 from safetensors.torch import load_file
 
@@ -224,107 +222,58 @@ class MemoryEfficientSafeOpen:
             # Float8 not supported in this PyTorch version
             raise ValueError(f"Unsupported float8 type: {dtype_str} (upgrade PyTorch to support float8 types)")
 
-@dataclass
-class WeightTransformHooks:
-    split_hook: Optional[callable] = None
-    concat_hook: Optional[callable] = None
-    rename_hook: Optional[callable] = None
+# Generic wrapper prefixes that repackagings (e.g. ComfyUI's "diffusion_model"
+# export) prepend to *every* tensor name. Seen so far: ``net.`` (Anima base) and
+# ``model.diffusion_model.`` (Anima aesthetics, Krea2 ComfyUI export). Shared by
+# detection (``normalize_keys``) and loading (``strip_wrap_prefixes``) so raw and
+# repackaged checkpoints resolve AND load identically.
+WRAP_PREFIXES = ("model.diffusion_model.", "net.")
 
 
-class TensorWeightAdapter:
+def strip_wrap_prefixes(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Return a new state dict with generic wrapper prefixes stripped from keys.
+
+    Repackaged checkpoints prefix every tensor name with a shared wrapper such as
+    ``model.diffusion_model.``. Strip it before ``load_state_dict`` so the model's
+    own key paths are restored (the loader expects bare ``txtfusion.``/``blocks.``
+    etc., not the wrapped forms).
     """
-    A wrapper for weight conversion hooks (split and concat) to be used with MemoryEfficientSafeOpen.
-    This wrapper adapts the original MemoryEfficientSafeOpen to apply the provided split and concat hooks
-    when loading tensors.
+    stripped = {}
+    for key, value in state_dict.items():
+        for prefix in WRAP_PREFIXES:
+            if key.startswith(prefix):
+                key = key[len(prefix):]
+                break
+        stripped[key] = value
+    return stripped
 
-    split_hook: A callable that takes (original_key: str, original_tensor: torch.Tensor) and returns (new_keys: list[str], new_tensors: list[torch.Tensor]).
-    concat_hook: A callable that takes (original_key: str, tensors: dict[str, torch.Tensor]) and returns (new_key: str,  concatenated_tensor: torch.Tensor).
-    rename_hook: A callable that takes (original_key: str) and returns (new_key: str).
 
-    If tensors is None, the hook should return only the new keys (for split) or new key (for concat), without tensors.
+def load_dit_safetensors(
+    path: str,
+    device: Union[str, torch.device],
+    dtype: Optional[torch.dtype] = None,
+    disable_mmap: bool = True,
+    disable_numpy_memmap: bool = False,
+    drop_keys: Optional[tuple[str, ...]] = None,
+) -> dict[str, torch.Tensor]:
+    """Load a DiT checkpoint state dict.
 
-    No need to implement __enter__ and __exit__ methods, as they are handled by the original MemoryEfficientSafeOpen.
-    Do not use this wrapper as a context manager directly, like `with WeightConvertHookWrapper(...) as f:`.
-
-    **concat_hook is not tested yet.**
+    Single entry point for DiT weight loading. Strips generic repackaging wrapper
+    prefixes (``model.diffusion_model.`` / ``net.``) so raw and repackaged
+    checkpoints load identically, and optionally drops leftover keys (e.g. Krea2's
+    unused ``last.down.*``/``last.up.*``) via ``drop_keys``.
     """
-
-    def __init__(self, weight_convert_hook: WeightTransformHooks, original_f: MemoryEfficientSafeOpen):
-        self.original_f = original_f
-        self.new_key_to_original_key_map: dict[str, Union[str, list[str]]] = (
-            {}
-        )  # for split: new_key -> original_key; for concat: new_key -> list of original_keys; for direct mapping: new_key -> original_key
-        self.concat_key_set = set()  # set of concatenated keys
-        self.split_key_set = set()  # set of split keys
-        self.new_keys = []
-        self.tensor_cache = {}  # cache for split tensors
-        self.split_hook = weight_convert_hook.split_hook
-        self.concat_hook = weight_convert_hook.concat_hook
-        self.rename_hook = weight_convert_hook.rename_hook
-
-        for key in self.original_f.keys():
-            if self.split_hook is not None:
-                converted_keys, _ = self.split_hook(key, None)  # get new keys only
-                if converted_keys is not None:
-                    for converted_key in converted_keys:
-                        self.new_key_to_original_key_map[converted_key] = key
-                        self.split_key_set.add(converted_key)
-                    self.new_keys.extend(converted_keys)
-                    continue  # skip concat_hook if split_hook is applied
-
-            if self.concat_hook is not None:
-                converted_key, _ = self.concat_hook(key, None)  # get new key only
-                if converted_key is not None:
-                    if converted_key not in self.concat_key_set:  # first time seeing this concatenated key
-                        self.concat_key_set.add(converted_key)
-                        self.new_key_to_original_key_map[converted_key] = []
-                        self.new_keys.append(converted_key)
-
-                    # multiple original keys map to the same concatenated key
-                    self.new_key_to_original_key_map[converted_key].append(key)
-                    continue  # skip to next key
-
-            # direct mapping
-            if self.rename_hook is not None:
-                new_key = self.rename_hook(key)
-                self.new_key_to_original_key_map[new_key] = key
-            else:
-                new_key = key
-
-            self.new_keys.append(new_key)
-
-    def keys(self) -> list[str]:
-        return self.new_keys
-
-    def get_tensor(self, new_key: str, device: Optional[torch.device] = None, dtype: Optional[torch.dtype] = None) -> torch.Tensor:
-        # load tensor by new_key, applying split or concat hooks as needed
-        if new_key not in self.new_key_to_original_key_map:
-            # direct mapping
-            return self.original_f.get_tensor(new_key, device=device, dtype=dtype)
-
-        elif new_key in self.split_key_set:
-            # split hook: split key is requested multiple times, so we cache the result
-            original_key = self.new_key_to_original_key_map[new_key]
-            if original_key not in self.tensor_cache:  # not yet split
-                original_tensor = self.original_f.get_tensor(original_key, device=device, dtype=dtype)
-                new_keys, new_tensors = self.split_hook(original_key, original_tensor)  # apply split hook
-                for k, t in zip(new_keys, new_tensors):
-                    self.tensor_cache[k] = t
-            return self.tensor_cache.pop(new_key)  # return and remove from cache
-
-        elif new_key in self.concat_key_set:
-            # concat hook: concatenated key is requested only once, so we do not cache the result
-            tensors = {}
-            for original_key in self.new_key_to_original_key_map[new_key]:
-                tensor = self.original_f.get_tensor(original_key, device=device, dtype=dtype)
-                tensors[original_key] = tensor
-            _, concatenated_tensors = self.concat_hook(self.new_key_to_original_key_map[new_key][0], tensors)  # apply concat hook
-            return concatenated_tensors
-
-        else:
-            # direct mapping
-            original_key = self.new_key_to_original_key_map[new_key]
-            return self.original_f.get_tensor(original_key, device=device, dtype=dtype)
+    sd = load_safetensors(
+        path,
+        device=device,
+        disable_mmap=disable_mmap,
+        disable_numpy_memmap=disable_numpy_memmap,
+        dtype=dtype,
+    )
+    sd = strip_wrap_prefixes(sd)
+    if drop_keys:
+        sd = {k: v for k, v in sd.items() if not k.startswith(drop_keys)}
+    return sd
 
 
 def load_safetensors(
@@ -354,38 +303,6 @@ def load_safetensors(
             for key in state_dict.keys():
                 state_dict[key] = state_dict[key].to(dtype=dtype)
         return state_dict
-
-
-def load_safetensors_with_hook(
-    model_file: str,
-    calc_device: torch.device,
-    move_to_device: bool = False,
-    dit_weight_dtype: Optional[torch.dtype] = None,
-    disable_numpy_memmap: bool = False,
-    weight_transform_hooks: Optional[WeightTransformHooks] = None,
-) -> dict[str, torch.Tensor]:
-    """
-    Load state dict from safetensors files and apply the optional LoRA merge hook.
-    """
-    logger.info(
-        f"Loading state dict. Dtype of weight: {dit_weight_dtype}"
-    )
-    state_dict = {}
-    with MemoryEfficientSafeOpen(model_file, disable_numpy_memmap=disable_numpy_memmap) as original_f:
-        f = TensorWeightAdapter(weight_transform_hooks, original_f) if weight_transform_hooks is not None else original_f
-        for key in tqdm(f.keys(), desc=f"Loading {os.path.basename(model_file)}", leave=False):
-            if move_to_device:
-                value = f.get_tensor(key, device=calc_device, dtype=dit_weight_dtype)
-            else:
-                value = f.get_tensor(key)
-                if dit_weight_dtype is not None:
-                    value = value.to(dit_weight_dtype)
-
-            state_dict[key] = value
-    if move_to_device:
-        synchronize_device(calc_device)
-
-    return state_dict
 
 
 def get_split_weight_filenames(file_path: str) -> Optional[list[str]]:
