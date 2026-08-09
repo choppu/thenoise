@@ -897,7 +897,7 @@ class Anima(nn.Module):
         extra_t_extrapolation_ratio: float = 1.0,
         rope_enable_fps_modulation: bool = True,
         use_llm_adapter: bool = False,
-        attn_mode: str = "torch",
+        attn_mode: str = None,
         split_attn: bool = False,
     ) -> None:
         super().__init__()
@@ -927,7 +927,7 @@ class Anima(nn.Module):
         self.rope_enable_fps_modulation = rope_enable_fps_modulation
         self.use_llm_adapter = use_llm_adapter
 
-        self.attn_mode = attn_mode
+        self.attn_mode = attention.preferred_attn_mode(attn_mode)
         self.split_attn = split_attn
 
         self.build_patch_embed()

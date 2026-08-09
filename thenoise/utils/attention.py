@@ -27,6 +27,27 @@ except ImportError:
     xops = None
 
 
+def preferred_attn_mode(configured: Optional[str] = None) -> str:
+    """Resolve the attention backend to the best one available.
+
+    Auto-detect on this ROCm build: prefer the fused flash-attention kernel
+    (``flash``) when installed, else the fused ``sageattn`` kernel, else PyTorch
+    SDPA (``torch``). An explicitly configured mode is honored verbatim so
+    callers can force a specific backend for testing, but the default is
+    automatic.
+
+    Returns:
+        One of ``"flash"`` / ``"sageattn"`` / ``"torch"``.
+    """
+    if configured:
+        return configured
+    if flash_attn is not None:
+        return "flash"
+    if sageattn is not None:
+        return "sageattn"
+    return "torch"
+
+
 @dataclass
 class AttentionParams:
     attn_mode: Optional[str] = None

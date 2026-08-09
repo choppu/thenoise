@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from torch import Tensor
 
-from thenoise.utils.attention import AttentionParams, attention as common_attention
+from thenoise.utils.attention import AttentionParams, attention as common_attention, preferred_attn_mode
 
 
 def rope(pos: Tensor, dim: int, theta: float = 1e4, ntk: float = 1.0) -> Tensor:
@@ -287,11 +287,12 @@ class SingleStreamBlock(nn.Module):
 
 
 class SingleStreamDiT(nn.Module):
-    def __init__(self, config: SingleMMDiTConfig, attn_mode: str = "torch", split_attn: bool = False):
+    def __init__(self, config: SingleMMDiTConfig, attn_mode: str = None, split_attn: bool = False):
         super().__init__()
         self.config = config
         # Backend for the shared attention ("torch"=SDPA, "flash", "sageattn", "xformers").
-        self.attn_mode = attn_mode
+        # ``None`` resolves to the best available backend for this ROCm build.
+        self.attn_mode = preferred_attn_mode(attn_mode)
         self.split_attn = split_attn
 
         headdim = config.features // config.heads

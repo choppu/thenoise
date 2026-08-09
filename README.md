@@ -188,8 +188,7 @@ same value in your `--dit` path:
 ```
 
 Available variants include `turbo-v1.0` (fewest steps), `aesthetic-v1.1`, and
-`base-v1.0`. Downloading `--variant aesthetic-v1.1` produces
-`anima-aesthetic-v1.1.safetensors`, not `anima-turbo-v1.0.safetensors`.
+`base-v1.0`.
 
 ---
 

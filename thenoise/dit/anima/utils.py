@@ -19,10 +19,10 @@ logger = logging.getLogger(__name__)
 def load_anima_model(
     device: Union[str, torch.device],
     dit_path: str,
-    attn_mode: str,
-    split_attn: bool,
-    loading_device: Union[str, torch.device],
-    dit_weight_dtype: Optional[torch.dtype],
+    attn_mode: Optional[str] = None,
+    split_attn: bool = False,
+    loading_device: Optional[Union[str, torch.device]] = None,
+    dit_weight_dtype: Optional[torch.dtype] = None,
 ) -> anima_models.Anima:
     """
     Load Anima model from the specified checkpoint.
@@ -37,7 +37,7 @@ def load_anima_model(
             If None, it will be loaded as is (same as the state_dict). if not None, model weights will be casted to this dtype.
     """
     device = torch.device(device)
-    loading_device = torch.device(loading_device)
+    loading_device = torch.device(device) if loading_device is None else torch.device(loading_device)
 
     # We currently support fixed DiT config for Anima models
     dit_config = {

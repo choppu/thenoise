@@ -75,7 +75,6 @@ class Krea2Model(DiffusionModel):
             dit_path,
             device=device,
             dtype=dtype,
-            attn_mode="torch",  # SDPA
         )
         self.dit.eval().requires_grad_(False)
 
