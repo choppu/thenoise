@@ -19,8 +19,6 @@ logger = logging.getLogger(__name__)
 def load_anima_model(
     device: Union[str, torch.device],
     dit_path: str,
-    attn_mode: Optional[str] = None,
-    split_attn: bool = False,
     loading_device: Optional[Union[str, torch.device]] = None,
     dit_weight_dtype: Optional[torch.dtype] = None,
 ) -> anima_models.Anima:
@@ -30,8 +28,6 @@ def load_anima_model(
     Args:
         device (Union[str, torch.device]): Device for optimization or merging
         dit_path (str): Path to the DiT model checkpoint.
-        attn_mode (str): Attention mode to use, e.g., "torch", "flash", etc.
-        split_attn (bool): Whether to use split attention.
         loading_device (Union[str, torch.device]): Device to load the model weights on.
         dit_weight_dtype (Optional[torch.dtype]): Data type of the DiT weights.
             If None, it will be loaded as is (same as the state_dict). if not None, model weights will be casted to this dtype.
@@ -54,8 +50,6 @@ def load_anima_model(
         "pos_emb_cls": "rope3d",
         "pos_emb_learnable": True,
         "pos_emb_interpolation": "crop",
-        "min_fps": 1,
-        "max_fps": 30,
         "use_adaln_lora": True,
         "adaln_lora_dim": 256,
         "num_blocks": 28,
@@ -67,10 +61,7 @@ def load_anima_model(
         "extra_h_extrapolation_ratio": 1.0,
         "extra_w_extrapolation_ratio": 1.0,
         "extra_t_extrapolation_ratio": 1.0,
-        "rope_enable_fps_modulation": False,
         "use_llm_adapter": True,
-        "attn_mode": attn_mode,
-        "split_attn": split_attn,
     }
     with init_empty_weights():
         model = anima_models.Anima(**dit_config)

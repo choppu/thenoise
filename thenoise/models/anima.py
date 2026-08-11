@@ -15,6 +15,7 @@ from thenoise.models.base import (
     Step,
     normalize_keys,
 )
+from thenoise.vae import load_qwen_vae
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +71,6 @@ class AnimaModel(DiffusionModel):
         self.dit = anima_utils.load_anima_model(
             device,
             dit_path,
-            attn_mode=None,
-            split_attn=False,
             loading_device=device,
             dit_weight_dtype=dtype,
         )
@@ -93,6 +92,14 @@ class AnimaModel(DiffusionModel):
             t5_max_length=512,
         )
         self.encoding_strategy = AnimaTextEncodingStrategy()
+
+        # Qwen-Image VAE (single-frame decode).
+        self.vae = (
+            load_qwen_vae(self.vae_path, device=self.device, disable_mmap=True)
+            .to(self.dtype)
+            .eval()
+            .requires_grad_(False)
+        )
 
         logger.info("Anima model ready on %s (%s)", device, dtype)
 
@@ -162,15 +169,11 @@ class AnimaModel(DiffusionModel):
         guidance_scale: float,
         i: int,
     ) -> torch.Tensor:
-        dev = torch.device(self.device)
         t_expand = t.expand(latents.shape[0])
-        padding_mask = torch.zeros(
-            1, 1, latents.shape[3], latents.shape[4], dtype=torch.bfloat16, device=dev
-        )
         with torch.no_grad():
-            noise_pred = self.dit(latents, t_expand, cond.cond, padding_mask=padding_mask)
+            noise_pred = self.dit(latents, t_expand, cond.cond)
             if guidance_scale > 1.0 and cond.null is not None:
-                uncond = self.dit(latents, t_expand, cond.null, padding_mask=padding_mask)
+                uncond = self.dit(latents, t_expand, cond.null)
                 noise_pred = uncond + guidance_scale * (noise_pred - uncond)
         return noise_pred
 
@@ -195,9 +198,3 @@ class AnimaModel(DiffusionModel):
         t = 1.0 - percent
         shift = self.DEFAULT_FLOW_SHIFT
         return (shift * t) / (1.0 + (shift - 1.0) * t)
-
-    def _apply_loras_for_generation(
-        self, lora_specs: Optional[List[str]]
-    ) -> None:
-        """Apply LoRAs to the Anima DiT before generation."""
-        self.switch_loras(lora_specs, self.dit)

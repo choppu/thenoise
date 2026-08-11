@@ -27,6 +27,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from thenoise.utils.safetensors import load_safetensors
 
@@ -168,7 +169,7 @@ class QwenImageUpsample(nn.Upsample):
     """
 
     def forward(self, x):
-        return super().forward(x.float()).type_as(x)
+        return super().forward(x)
 
 
 class QwenImageResample(nn.Module):
@@ -312,8 +313,10 @@ class QwenImageAttentionBlock(nn.Module):
         #
         # On ROCm 7.14+ the fused SDPA backends (flash and memory-efficient) produce
         # localized broken-pixel artifacts in this VAE decoder (the math backend and
-        # this manual implementation are both clean). We keep it in the module dtype 
-        # (bf16) for speed; the tradeoff is an O(seq^2) attention matrix.
+        # this manual implementation are both clean).
+        # using with sdpa_kernel([SDPBackend.MATH]):
+        #                x = F.scaled_dot_product_attention(q, k, v)
+        # would work as well but seems to introduce a delay (at least on gfx1150).
         scale = channels ** 0.5  # SDPA default scale = 1/sqrt(head_dim)
         attn = (q @ k.transpose(-2, -1)) / scale
         attn = attn.softmax(dim=-1)
@@ -666,6 +669,18 @@ class AutoencoderKLQwenImage(nn.Module):
         self.latents_mean = latents_mean
         self.latents_std = latents_std
 
+        # Hoisted buffers (built once; moved with the module via `.to(device)`).
+        self.register_buffer(
+            "_latents_mean",
+            torch.tensor(latents_mean).view(1, self.z_dim, 1, 1, 1),
+            persistent=False,
+        )
+        self.register_buffer(
+            "_latents_std",
+            (1.0 / torch.tensor(latents_std)).view(1, self.z_dim, 1, 1, 1),
+            persistent=False,
+        )
+
         self.encoder = QwenImageEncoder3d(
             base_dim, z_dim * 2, dim_mult, num_res_blocks, attn_scales, self.temperal_downsample, dropout, input_channels
         )
@@ -740,8 +755,8 @@ class AutoencoderKLQwenImage(nn.Module):
             latents = latents.unsqueeze(2)  # [B, C, H, W] -> [B, C, 1, H, W]
 
         latents = latents.to(self.dtype)
-        latents_mean = torch.tensor(self.latents_mean).view(1, self.z_dim, 1, 1, 1).to(latents.device, latents.dtype)
-        latents_std = 1.0 / torch.tensor(self.latents_std).view(1, self.z_dim, 1, 1, 1).to(latents.device, latents.dtype)
+        latents_mean = self._latents_mean.to(latents.device, latents.dtype)
+        latents_std = self._latents_std.to(latents.device, latents.dtype)
         latents = latents / latents_std + latents_mean
 
         image = self.decode(latents, return_dict=False)[0]  # -1 to 1
@@ -772,8 +787,8 @@ class AutoencoderKLQwenImage(nn.Module):
         latents = posterior.mode()  # Use mode instead of sampling for deterministic results
 
         # Apply normalization using mean/std
-        latents_mean = torch.tensor(self.latents_mean).view(1, self.z_dim, 1, 1, 1).to(latents.device, latents.dtype)
-        latents_std = 1.0 / torch.tensor(self.latents_std).view(1, self.z_dim, 1, 1, 1).to(latents.device, latents.dtype)
+        latents_mean = self._latents_mean.to(latents.device, latents.dtype)
+        latents_std = self._latents_std.to(latents.device, latents.dtype)
         latents = (latents - latents_mean) * latents_std
 
         if is_4d:
@@ -931,13 +946,13 @@ def convert_comfyui_state_dict(sd):
     return new_state_dict
 
 
-def load_vae(
+def load_qwen_vae(
     vae_path: str,
     input_channels: int = 3,
     device: Union[str, torch.device] = "cpu",
     disable_mmap: bool = False,
 ) -> AutoencoderKLQwenImage:
-    """Load VAE from a given path."""
+    """Load the Qwen-Image VAE from a given path."""
     VAE_CONFIG_JSON = """
 {
   "_class_name": "AutoencoderKLQwenImage",
