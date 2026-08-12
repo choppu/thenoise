@@ -286,11 +286,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
+          REPO="${{ github.repository }}"
           rm -rf qual && mkdir -p qual
-          if ! gh run download "${{ github.run_id }}" -n qualification-gfx1151 -D qual --repo "${{ github.repository }}"; then
+          if ! gh run download "${{ github.run_id }}" -n qualification-gfx1151 -D qual --repo "$REPO"; then
             echo "::warning::qualification artifact not found; skipping attach"; exit 0
           fi
           if [ -f qual/qualification-report.json ]; then
             cp qual/qualification-report.json "qualification-report-${TAG}.json"
-            gh release upload "$TAG" "qualification-report-${TAG}.json" --clobber
+            gh release upload "$TAG" "qualification-report-${TAG}.json" --clobber --repo "$REPO"
           fi
