@@ -226,7 +226,7 @@ class Attention(nn.Module):
         k = self.k_proj(context)
         v = self.v_proj(context)
         q, k, v = map(
-            lambda t: rearrange(t, "b ... (h d) -> b ... h d", h=self.n_heads, d=self.head_dim),
+            lambda t: t.reshape(*t.shape[:-1], self.n_heads, self.head_dim),
             (q, k, v),
         )
 
