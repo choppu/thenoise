@@ -71,17 +71,23 @@ jobs:
         run: |
           bash scripts/build_portable.sh "${{ matrix.gfx_target }}"
 
+      - name: Create release archive (preserves symlinks)
+        run: |
+          # tar the bundle directly so symlinks (libfoo.so -> libfoo.so.N,
+          # clang-*) stay as links. upload-artifact's zip does NOT preserve
+          # symlinks and would expand each into a full copy of its target,
+          # bloating the release artifact. tar also keeps the hidden per-gfx
+          # GPU code-object dirs (torch/.kpack/, _rocm_sdk_*/.kpack/,
+          # .devel_links/) that ROCm wheels ship.
+          ARCHIVE="${{ runner.temp }}/thenoise-${{ matrix.gfx_target }}-x64.tar.gz"
+          tar -czf "$ARCHIVE" -C "${{ env.THENOISE_ROOT }}" .
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: thenoise-rocm-${{ matrix.gfx_target }}-x64
-          path: ${{ env.THENOISE_ROOT }}/
-          # CRITICAL: AMD ROCm wheels ship per-gfx GPU code objects in hidden
-          # dot-dirs (torch/.kpack/, _rocm_sdk_*/.kpack/, .devel_links/). Since
-          # v4, upload-artifact EXCLUDES hidden files by default — dropping them
-          # silently produces a bundle that loads but dies on the first kernel
-          # launch (hipErrorInvalidImage). Do not remove this.
-          include-hidden-files: true
+          path: ${{ env.ARCHIVE }}
           retention-days: 30
           compression-level: 6
 
@@ -138,9 +144,15 @@ jobs:
             echo "attempt $attempt failed; retrying in 15s"; sleep 15
           done
           [ "$ok" = 1 ] || { echo "::error::artifact download failed"; exit 1; }
-          if command -v unzip >/dev/null 2>&1; then unzip -q -o "$ZIP" -d "$DEST"
-          else python3 -m zipfile -e "$ZIP" "$DEST"; fi
+          # The artifact now holds the release tar.gz (not raw bundle contents);
+          # unzip it, then untar so $DEST is the bundle root (bin/, lib/, ...).
+          if command -v unzip >/dev/null 2>&1; then unzip -q -o "$ZIP" -d "$WORK/raw"
+          else python3 -m zipfile -e "$ZIP" "$WORK/raw"; fi
           rm -f "$ZIP"
+          TARBALL=$(find "$WORK/raw" -name '*.tar.gz' | head -n1)
+          [ -n "$TARBALL" ] || { echo "::error::no release archive in gfx1151 artifact"; exit 1; }
+          tar -xzf "$TARBALL" -C "$DEST"
+          rm -rf "$WORK/raw"
           echo "Bundle: $(du -sh "$DEST" | cut -f1)"
 
       - name: Run GPU qualification
@@ -148,8 +160,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           WORK="${{ runner.temp }}/thenoise-qual"
-          # upload-artifact archives the bundle CONTENTS at the artifact root
-          # (bin/, lib/, include/), so the bundle root is $WORK/bundle directly.
+          # The release tar.gz was untarred into $WORK/bundle above, so the
+          # bundle root (bin/, lib/, include/) is $WORK/bundle directly.
           ROOT="$WORK/bundle"
           MODEL_DIR="$WORK/anima"
           mkdir -p "$MODEL_DIR"
@@ -221,8 +233,15 @@ jobs:
             target_dir="./artifacts/thenoise-rocm-${target}-x64"
             [ -d "$target_dir" ] || { echo "::warning::artifact for ${target} not found; skipping"; continue; }
             base="${TAG}-${target}-x64"
-            echo "Creating: ${base}.tar.gz"
-            tar -czf "${base}.tar.gz" -C "$target_dir" .
+            # The release archive is already built in the build job (with
+            # symlinks preserved); just reuse it here. Splitting logic stays
+            # here (GitHub 2 GB release limit).
+            src=$(find "$target_dir" -name '*.tar.gz' | head -n1)
+            if [ -z "$src" ]; then
+              echo "::warning::no release archive in artifact for ${target}; skipping"
+              continue
+            fi
+            cp "$src" "${base}.tar.gz"
             size_mb=$(du -m "${base}.tar.gz" | cut -f1)
             echo "Archive size: ${size_mb} MB"
             if [ "$size_mb" -gt 1900 ]; then
@@ -248,9 +267,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
+          REPO="${{ github.repository }}"
           # shellcheck disable=SC2086
-          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "$TAG" \
+          gh release delete "$TAG" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" --repo "$REPO" \
             --title "v${{ needs.build.outputs.thenoise_version }}" \
             --notes "**GPU Targets**: ${{ needs.prepare-matrix.outputs.gfx_targets }}
           **TheNoise Version**: ${{ needs.build.outputs.thenoise_version }}
