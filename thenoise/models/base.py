@@ -282,14 +282,11 @@ class DiffusionModel(ABC):
         if not self.lora_dir:
             raise ValueError("lora_dir is not set")
 
-        base = os.path.realpath(self.lora_dir)
-        candidate = os.path.realpath(os.path.join(self.lora_dir, filename))
+        base = os.path.abspath(self.lora_dir)
+        candidate = os.path.abspath(os.path.join(self.lora_dir, filename))
 
         if not candidate.startswith(base + os.sep) and candidate != base:
-            raise ValueError(
-                f"LoRA path escapes lora_dir: {filename!r} "
-                f"(resolved to {candidate}, must stay under {base})"
-            )
+            raise ValueError("LoRA path escapes lora_dir")
 
         return candidate
 
