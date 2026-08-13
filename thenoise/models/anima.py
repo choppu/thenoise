@@ -15,6 +15,7 @@ from thenoise.models.base import (
     Step,
     normalize_keys,
 )
+from thenoise.utils.math import round_up
 from thenoise.vae import load_qwen_vae
 
 logger = logging.getLogger(__name__)
@@ -182,9 +183,11 @@ class AnimaModel(DiffusionModel):
         return latents.squeeze(2)
 
     def resolve_size(self, width: int, height: int) -> tuple[int, int]:
-        if height % 32 != 0 or width % 32 != 0:
-            raise ValueError(f"height and width must be divisible by 32, got {height}x{width}")
-        return width, height
+        # The latent grid is patchified in 2x2 blocks (patch_spatial=2) on an
+        # 8x-VAE-compressed latent, so pixel dims must be multiples of
+        # 8 * 2 = 16. Round up to the nearest multiple.
+        align = 16
+        return round_up(width, align), round_up(height, align)
 
     def percent_to_sigma(self, percent: float) -> float:
         """Percent -> sigma.

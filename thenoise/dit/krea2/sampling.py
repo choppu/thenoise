@@ -12,14 +12,6 @@ import torch
 from einops import rearrange, repeat
 
 
-def roundup(value, multiple, name):
-    """Round `value` up to the nearest multiple, logging when padding is applied."""
-    aligned = ((value + multiple - 1) // multiple) * multiple
-    if aligned != value:
-        print(f"[sample] {name}={value} is not a multiple of {multiple}; padding to {aligned}")
-    return aligned
-
-
 def gather_valid_text(txt, mask):
     """Drop masked (invalid) text tokens so the valid ones form a contiguous prefix, then
     right-pad to the batch maximum.

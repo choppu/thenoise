@@ -9,13 +9,14 @@ import torch
 from einops import rearrange
 
 from thenoise.dit.krea2 import utils as krea2_utils
-from thenoise.dit.krea2.sampling import encode_prompts, prepare, roundup, timesteps
+from thenoise.dit.krea2.sampling import encode_prompts, prepare, timesteps
 from thenoise.models.base import (
     Conditioning,
     DiffusionModel,
     Step,
     normalize_keys,
 )
+from thenoise.utils.math import round_up
 from thenoise.vae import load_qwen_vae
 
 logger = logging.getLogger(__name__)
@@ -233,9 +234,9 @@ class Krea2Model(DiffusionModel):
 
     def resolve_size(self, width: int, height: int) -> tuple[int, int]:
         # The latent grid is patchified in `patch`-sized blocks, so width/height
-        # must be multiples of compression * patch. Pad up otherwise.
+        # must be multiples of compression * patch. Round up otherwise.
         align = self._compression * self.dit.config.patch
-        return roundup(width, align, "width"), roundup(height, align, "height")
+        return round_up(width, align), round_up(height, align)
 
     def percent_to_sigma(self, percent: float) -> float:
         """Percent -> sigma (ComfyUI ModelSamplingFlux, shift=mu=1.15).

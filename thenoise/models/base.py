@@ -135,6 +135,13 @@ class Step:
     delta: torch.Tensor
 
 
+def _center_crop(image: Image.Image, width: int, height: int) -> Image.Image:
+    """Center-crop ``image`` to ``(width, height)``."""
+    left = (image.width - width) // 2
+    top = (image.height - height) // 2
+    return image.crop((left, top, left + width, top + height))
+
+
 class DiffusionModel(ABC):
     """Base class for model adapters. Subclasses must set ``name``."""
 
@@ -466,6 +473,11 @@ class DiffusionModel(ABC):
             if guidance_scale is None
             else guidance_scale
         )
+
+        target_width, target_height = width, height
+        if upscale:
+            target_width *= self.UPSCALE_SCALE
+            target_height *= self.UPSCALE_SCALE
         width, height = self.resolve_size(width, height)
         effective_sampler = sampler or self.SAMPLER
 
@@ -529,13 +541,16 @@ class DiffusionModel(ABC):
             )
             image = self._to_pil(pixels)
 
+            if (image.width, image.height) != (target_width, target_height):
+                image = _center_crop(image, target_width, target_height)
+
             # Attach PNG metadata
             pnginfo = build_pnginfo(
                 model=self.name,
                 prompt=prompt,
                 negative_prompt=negative_prompt,
-                width=width,
-                height=height,
+                width=image.width,
+                height=image.height,
                 steps=steps,
                 guidance_scale=guidance_scale,
                 seed=seed,
