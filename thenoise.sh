@@ -8,7 +8,6 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="$PROJECT_DIR/.venv"
-GFX_ARCH="${GFX_ARCH:-gfx1151}"
 
 # ---- 1. Check that uv is available ----------------------------------------
 if ! command -v uv &>/dev/null; then
@@ -37,6 +36,36 @@ fi
 # ---- 3. Install torch (ROCm build) ----------------------------------------
 if ! "$VENV_DIR/bin/python" -c "import torch" &>/dev/null; then
   echo "Installing ROCm torch ..."
+
+  detect_gfx_arch() {
+    local version=""
+    local props v
+    for props in /sys/class/kfd/kfd/topology/nodes/*/properties; do
+      [ -f "$props" ] || continue
+      v="$(awk '/^gfx_target_version/ {print $2}' "$props" 2>/dev/null)"
+      if [ -n "$v" ] && [ "$v" != "0" ]; then
+        version="$v"
+        break
+      fi
+    done
+    case "$version" in
+      110500) echo gfx1150 ;;
+      110501) echo gfx1151 ;;
+      110502) echo gfx1152 ;;
+      *) echo "" ;;
+    esac
+  }
+
+  # An explicit GFX_ARCH env var always wins over auto-detection.
+  if [ -n "${GFX_ARCH:-}" ]; then
+    :
+  elif GFX_ARCH="$(detect_gfx_arch)" && [ -n "$GFX_ARCH" ]; then
+    echo "Auto-detected GFX_ARCH=$GFX_ARCH"
+  else
+    echo "Warning: could not auto-detect GFX_ARCH from /sys/class/kfd; falling back to gfx1151." >&2
+    GFX_ARCH="gfx1151"
+  fi
+
   uv pip install \
     "torch[device-$GFX_ARCH]==2.11" \
     "torchvision[device-$GFX_ARCH]==0.26" \
