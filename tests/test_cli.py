@@ -19,6 +19,7 @@ def test_parse_lora_spec_no_suffix():
         def init_latents(self, height, width, seed): pass
         def schedule(self, steps, height, width): pass
         def denoise_step(self, latents, t, cond, guidance_scale, i): pass
+        def _upscale_format(self): return "wan21"
 
     # Can't fully instantiate (needs VAE), but we can test the pure parsing
     # by calling the method directly with a mock object
@@ -55,6 +56,7 @@ def test_resolve_lora_path_blocks_traversal():
         def init_latents(self, height, width, seed): pass
         def schedule(self, steps, height, width): pass
         def denoise_step(self, latents, t, cond, guidance_scale, i): pass
+        def _upscale_format(self): return "wan21"
 
     model = object.__new__(_TestModel)
 
@@ -89,6 +91,7 @@ def test_lora_spec_hash():
         def init_latents(self, height, width, seed): pass
         def schedule(self, steps, height, width): pass
         def denoise_step(self, latents, t, cond, guidance_scale, i): pass
+        def _upscale_format(self): return "wan21"
 
     model = object.__new__(_TestModel)
     model.lora_dir = "/tmp/loras"

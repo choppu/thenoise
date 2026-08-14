@@ -201,3 +201,7 @@ class AnimaModel(DiffusionModel):
         t = 1.0 - percent
         shift = self.DEFAULT_FLOW_SHIFT
         return (shift * t) / (1.0 + (shift - 1.0) * t)
+
+    def _upscale_format(self) -> str:
+        """Qwen-Image VAE -> Wan21 z-score latent format."""
+        return "wan21"

@@ -13,6 +13,8 @@ their own VAE:
   * ``denoise_step(...)``    — one DiT forward + CFG, returning a velocity.
   * ``finalize_latent(...)`` — model-internal -> canonical latent (once, post-loop).
   * ``resolve_size(...)``    — per-model size rounding / validation.
+  * ``_upscale_format(...)``  — required: the latent-format name for this
+    model's VAE (selected by ``load_upscaler``).
 
 Both models use the same Qwen-Image VAE (z_dim=16, spatial compression 8), so
 ``init_latents`` produces and ``finalize_latent`` returns the canonical latent
@@ -183,7 +185,8 @@ class DiffusionModel(ABC):
         # of downstream tensors when any stage is invalidated.
         self._cache = PipelineCache()
 
-        # Lazy Sesqui latent upscaler (only loaded if ``upscale`` is requested).
+        # Lazy latent upscaler (only loaded if ``upscale`` is requested).
+        # ``_upscale_format`` supplies the latent-format name matching the VAE.
         self._upscaler = None
         self._adaptor = None
 
@@ -576,11 +579,23 @@ class DiffusionModel(ABC):
         return self.finalize_latent(x, height, width)
 
     # ------------------------------------------------------------- upscaling
+    @abstractmethod
+    def _upscale_format(self) -> str:
+        """Return the latent-format name matching this model's VAE.
+
+        Concrete subclasses must override this to return the name of their VAE's
+        latent format (e.g. ``"wan21"`` for the shared Qwen-Image VAE). It is
+        passed to ``load_upscaler``, which selects the adaptor and weight file.
+        """
+        ...
+
     def _load_upscaler(self):
-        """Load the Sesqui latent upscaler (once, lazily, under the lock)."""
+        """Load the latent upscaler (once, lazily, under the lock)."""
         if self._upscaler is None:
             self._upscaler, self._adaptor = load_upscaler(
-                device=self.device, dtype=self.dtype
+                self._upscale_format(),
+                device=self.device,
+                dtype=self.dtype,
             )
         return self._upscaler, self._adaptor
 
@@ -597,9 +612,9 @@ class DiffusionModel(ABC):
         """Upscale the canonical latent ``UPSCALE_SCALE``x in latent space, then
         run a short low-strength refine denoise at the new size.
 
-        Sesqui operates on raw VAE latents; the Wan21 adaptor converts the
-        canonical (z-score) latent to/from that space. The refined result is the
-        canonical latent at the upscaled spatial size, ready for ``decode``.
+        Sesqui operates on raw VAE latents; the adaptor converts the canonical
+        latent to/from that raw space. The refined result is the canonical latent
+        at the upscaled spatial size, ready for ``decode``.
         """
         upscaler, adaptor = self._load_upscaler()
         scale = self.UPSCALE_SCALE

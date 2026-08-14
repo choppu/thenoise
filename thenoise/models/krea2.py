@@ -250,3 +250,7 @@ class Krea2Model(DiffusionModel):
         t = 1.0 - percent
         mu = self.DEFAULT_MU
         return math.exp(mu) / (math.exp(mu) + (1.0 / t - 1.0))
+
+    def _upscale_format(self) -> str:
+        """Qwen-Image VAE -> Wan21 z-score latent format."""
+        return "wan21"

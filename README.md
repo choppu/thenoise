@@ -19,6 +19,18 @@ Yes, and ComfyUI will always be better than this for the advanced user. This is 
 
 ---
 
+## Acknowledgments
+
+This project incorporates code from:
+
+1. [Musubi Tuner](https://github.com/kohya-ss/musubi-tuner)
+2. [SD Scripts](https://github.com/kohya-ss/sd-scripts)
+3. [SesquiLSR](https://github.com/LoganBooker/SesquiLSR)
+
+plus smaller snippets from other sources or transitively inherited through the above codebases.
+
+---
+
 ## Setup
 
 The steps below are copy-pasteable end to end. They take you from a fresh clone
