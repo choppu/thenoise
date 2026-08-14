@@ -54,12 +54,12 @@ without needing any model weights yet:
 This is the slow step — it downloads several GB of ROCm PyTorch wheels.
 Subsequent runs skip the torch install (detected via `import torch`).
 
-By default the script targets `gfx1151` (Strix Halo). Override with the
+By default the script autodetects the GPU's architecture. Override with the
 `GFX_ARCH` environment variable, which applies to every `./thenoise.sh`
 invocation. Supported targets are `gfx1150`, `gfx1151`, and `gfx1152`:
 
 ```bash
-GFX_ARCH=gfx1152 ./thenoise.sh --help
+GFX_ARCH=gfx1151 ./thenoise.sh --help
 ```
 
 ### 4. Download a model
