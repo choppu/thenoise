@@ -237,10 +237,12 @@ def make_ideogram4(
 
 
 class _AffineAdaptor(LatentFormatAdaptor):
-    """Affine transform: (z - shift) * scale and inverse.
+    """Affine transform: z / scale + shift and inverse.
 
-    Used by SDXL and Flux where ComfyUI stores raw VAE latents between nodes
-    but the diffusion model (and Sesqui) operates on scaled latents.
+    Used by SDXL and Flux. The diffusion model / VAE operate on a latent scaled
+    by ``(raw - shift) * scale``, so converting the external (model) latent to the
+    raw VAE latent that Sesqui upscalers consume is ``z / scale + shift`` (the
+    inverse of the VAE's decode normalization).
     """
 
     def __init__(self, external_channels: int, scale: float, shift: float):
@@ -249,10 +251,12 @@ class _AffineAdaptor(LatentFormatAdaptor):
         self.shift = shift
 
     def to_vae_latent(self, z: Tensor) -> Tensor:
-        return (z.float() - self.shift) * self.scale
+        # Model latent = (raw - shift) * scale  ->  raw = z / scale + shift.
+        return z.float() / self.scale + self.shift
 
     def from_vae_latent(self, z: Tensor) -> Tensor:
-        return z.float() / self.scale + self.shift
+        # raw VAE latent -> model latent: (z - shift) * scale.
+        return (z.float() - self.shift) * self.scale
 
 
 class _ZScoreAdaptor(LatentFormatAdaptor):
