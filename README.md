@@ -83,9 +83,9 @@ installed inside `.venv`, not on your system Python:
 .venv/bin/python scripts/download_anima.py --out ./models/anima --variant turbo-v1.0
 ```
 
-Anima is the smaller of the two supported models (~5.4 GB total), so it is the
-quickest way to get a first image. See [Supported Models](#supported-models) for
-Krea 2, which is larger (~35 GB) but higher quality.
+Anima is the smaller of the two original supported models (~5.4 GB total), so it
+is the quickest way to get a first image. See [Supported Models](#supported-models)
+for Krea 2 (larger, higher quality) and Z-Image-Turbo (distilled 8-step).
 
 ### 5. Generate an image
 
@@ -168,7 +168,7 @@ rather keep the system interpreter.
 
 ## Supported Models
 
-At the moment, only Krea 2 and Anima are supported. New models will be added. PRs adding model support are welcome.
+Anima, Krea 2, and Z-Image-Turbo are supported. New models will be added. PRs adding model support are welcome.
 
 All download commands use `.venv/bin/python`, because `huggingface_hub` lives in
 the project venv created by [Setup](#setup) — a bare `python` will not work.
@@ -177,6 +177,7 @@ the project venv created by [Setup](#setup) — a bare `python` will not work.
 |-------|---------------|-------|
 | Anima | ~5.4 GB | 2B params; fastest to download and run |
 | Krea 2 | ~35 GB | Higher quality; much larger text encoder and DiT |
+| Z-Image-Turbo | ~21 GB | Distilled 8-step S3-DiT; Flux VAE + Qwen3 caption encoder |
 
 ### Krea 2
 
@@ -201,6 +202,32 @@ same value in your `--dit` path:
 
 Available variants include `turbo-v1.0` (fewest steps), `aesthetic-v1.1`, and
 `base-v1.0`.
+
+### Z-Image-Turbo
+
+```bash
+.venv/bin/python scripts/download_zimage.py --out ./models/zimage
+```
+
+This fetches the single-file bf16 Turbo DiT (~12 GB), the Flux VAE (`ae.safetensors`),
+and the Qwen3-4B text encoder (`qwen_3_4b.safetensors`, ~8 GB) — all from
+`Comfy-Org/z_image_turbo` — plus the tokenizer (`tokenizer/`) from
+`Tongyi-MAI/Z-Image-Turbo`. It also downloads the SesquiLSR **Flux** latent upscaler
+and converts it fp32 → bf16 into the package's `thenoise/upscale/weights/` directory
+(used by `--upscale`; the `--vae` for Z-Image is the Flux VAE).
+
+Z-Image-Turbo is a distilled flow model: **8 denoising steps, CFG off** (the default
+`guidance_scale` is 1, ComfyUI's "off" convention). It uses the Flux VAE, so it has
+its own `--vae`.
+
+```bash
+./thenoise.sh generate \
+  --dit ./models/zimage/split_files/diffusion_models/z_image_turbo_bf16.safetensors \
+  --vae ./models/zimage/split_files/vae/ae.safetensors \
+  --text-encoder ./models/zimage/split_files/text_encoders/qwen_3_4b.safetensors \
+  --prompt "a fox walking in the snow" \
+  --out /tmp/zimage.png
+```
 
 ---
 
@@ -237,6 +264,14 @@ Krea 2:
   --dit ./models/krea2/diffusion_models/krea2_turbo_bf16.safetensors \
   --vae ./models/krea2/vae/qwen_image_vae.safetensors \
   --text-encoder ./models/krea2/text_encoders/qwen3vl_4b_bf16.safetensors \
+  --host 127.0.0.1 --port 8000
+```
+
+```bash
+./thenoise.sh serve \
+  --dit ./models/zimage/split_files/diffusion_models/z_image_turbo_bf16.safetensors \
+  --vae ./models/zimage/split_files/vae/ae.safetensors \
+  --text-encoder ./models/zimage/split_files/text_encoders/qwen_3_4b.safetensors \
   --host 127.0.0.1 --port 8000
 ```
 
