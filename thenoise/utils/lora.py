@@ -58,6 +58,70 @@ def _unwrap_compiled(model: torch.nn.Module) -> torch.nn.Module:
     return model
 
 
+def _convert_fused_attention_lora(
+    lora_sd: Dict[str, torch.Tensor],
+    use_fused: bool,
+) -> Dict[str, torch.Tensor]:
+    """Convert a diffusers-layout S3-DiT attention LoRA to the fused-qkv layout.
+
+    Diffusers' ``ZImageTransformer2DModel`` uses separate ``to_q``/``to_k``/
+    ``to_v``/``to_out`` projections, while thenoise's Z-Image port (ComfyUI /
+    Lumina layout) fuses QKV into a single ``qkv`` projection plus ``out``.
+    LoRAs trained on the diffusers layout therefore use keys that do not match
+    the model's parameters (``to_q``/``to_k``/``to_v`` -> ``qkv``, ``to_out.0``
+    -> ``out``). This helper remaps those factors so they apply correctly.
+
+    The fused q/k/v factors are combined as:
+      * A_qkv = concat([A_q; A_k; A_v], dim=0)              -> [3r, dim]
+      * B_qkv = block_diag(B_q, B_k, B_v)                   -> [3*dim, 3r]
+    so that ``B_qkv @ A_qkv`` reproduces the per-projection block-diagonal
+    delta (q rows, then k, then v) that the model's fused ``qkv`` expects.
+    Because the fused rank is ``3r``, ``_compute_lora_delta``'s default scale
+    ``alpha/dim`` with ``alpha = down.size(0) = 3r`` evaluates to 1, matching
+    each original projection's ``r/r = 1`` scaling.
+
+    ``feed_forward`` (w1/w2/w3) already shares identical naming and is left
+    untouched, as is everything else. If the LoRA isn't in the diffusers
+    attention layout, it is returned unchanged. The input is not mutated.
+    """
+    if not use_fused:
+        return lora_sd
+    keys = list(lora_sd.keys())
+    if not any("attention.to_q.lora_A.weight" in k for k in keys):
+        return lora_sd
+
+    # Group the to_q/to_k/to_v factors by their shared attention prefix
+    # (e.g. "diffusion_model.layers.0.attention.").
+    groups = set()
+    for k in keys:
+        m = re.match(r"^(.*?\.attention\.)to_[qkv]\.lora_[AB]\.weight$", k)
+        if m:
+            groups.add(m.group(1))
+    if not groups:
+        return lora_sd
+
+    new_sd = dict(lora_sd)
+    for prefix in groups:
+        # Fuse q/k/v factors into a single qkv projection (rows q, k, v).
+        for side in ("A", "B"):
+            parts = [
+                new_sd.pop(f"{prefix}to_{p}.lora_{side}.weight")
+                for p in ("q", "k", "v")
+            ]
+            if side == "A":
+                new_sd[f"{prefix}qkv.lora_A.weight"] = torch.cat(parts, dim=0)
+            else:
+                new_sd[f"{prefix}qkv.lora_B.weight"] = torch.block_diag(*parts)
+        # to_out.0 -> out (single projection, rename only).
+        out_a = f"{prefix}to_out.0.lora_A.weight"
+        out_b = f"{prefix}to_out.0.lora_B.weight"
+        if out_a in new_sd:
+            new_sd[f"{prefix}out.lora_A.weight"] = new_sd.pop(out_a)
+        if out_b in new_sd:
+            new_sd[f"{prefix}out.lora_B.weight"] = new_sd.pop(out_b)
+    return new_sd
+
+
 def _compute_lora_delta(
     model_weight: torch.Tensor,
     down_weight: torch.Tensor,
@@ -152,6 +216,15 @@ def apply_lora_to_model(
     logger.info("Applying LoRA to model. multipliers: %s", multipliers)
 
     base_model = _unwrap_compiled(model)
+
+    # Detect whether the model uses a fused qkv attention (S3-DiT ComfyUI
+    # layout). If so, convert any diffusers-layout (separate to_q/to_k/to_v)
+    # LoRA factors to match the model's parameters.
+    model_weight_keys = [
+        k for k, _ in base_model.named_parameters() if k.endswith(".weight")
+    ]
+    use_fused = any(k.endswith(".attention.qkv.weight") for k in model_weight_keys)
+    lora_sds = [_convert_fused_attention_lora(sd, use_fused) for sd in lora_sds]
 
     # Build key sets for each LoRA
     lora_weight_keys_list = [set(sd.keys()) for sd in lora_sds]
