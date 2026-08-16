@@ -6,7 +6,10 @@ from .cli import build_parser
 
 def _serve(args) -> None:
     from .runtime import Settings, ModelPaths, Runtime
-    settings = Settings(device=args.device, host=args.host, port=args.port)
+    settings = Settings(
+        device=args.device, host=args.host, port=args.port,
+        upscaler_dir=args.upscaler_dir,
+    )
 
     runtime = Runtime(settings)
     runtime.load(
@@ -15,7 +18,6 @@ def _serve(args) -> None:
             vae_path=args.vae,
             text_encoder_path=args.text_encoder,
             lora_dir=args.lora_dir,
-            upscaler_dir=args.upscaler_dir,
         ),
     )
 

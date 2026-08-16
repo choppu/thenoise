@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
 
 import torch
 
@@ -15,6 +14,7 @@ from thenoise.models.base import (
     Step,
     normalize_keys,
 )
+from thenoise.models.config import ModelConfig, SamplingParams
 from thenoise.utils.math import round_up
 from thenoise.vae import load_qwen_vae
 
@@ -52,37 +52,23 @@ class AnimaModel(DiffusionModel):
     def __init__(
         self,
         *,
-        dit_path: str,
-        vae_path: str,
-        text_encoder_path: str,
-        device: str = "cuda",
-        dtype: torch.dtype = torch.bfloat16,
-        lora_dir: Optional[str] = None,
-        upscaler_dir: Optional[str] = None,
+        config: ModelConfig,
     ):
-        super().__init__(
-            dit_path=dit_path,
-            vae_path=vae_path,
-            text_encoder_path=text_encoder_path,
-            device=device,
-            dtype=dtype,
-            lora_dir=lora_dir,
-            upscaler_dir=upscaler_dir,
-        )
+        super().__init__(config=config)
 
-        logger.info("Loading Anima DiT from %s", dit_path)
+        logger.info("Loading Anima DiT from %s", config.dit_path)
         self.dit = anima_utils.load_anima_model(
-            device,
-            dit_path,
-            loading_device=device,
-            dit_weight_dtype=dtype,
+            config.device,
+            config.dit_path,
+            loading_device=config.device,
+            dit_weight_dtype=config.dtype,
         )
         self.dit.eval().requires_grad_(False)
 
         # Text encoder (Qwen3-0.6B) + tokenizers.
-        logger.info("Loading Anima text encoder from %s", text_encoder_path)
+        logger.info("Loading Anima text encoder from %s", config.text_encoder_path)
         self.text_encoder, self.qwen3_tokenizer = anima_utils.load_qwen3_text_encoder(
-            text_encoder_path, dtype=dtype, device=device
+            config.text_encoder_path, dtype=config.dtype, device=config.device
         )
         self.text_encoder.eval().requires_grad_(False)
         self.t5_tokenizer = anima_utils.load_t5_tokenizer(None)
@@ -104,7 +90,7 @@ class AnimaModel(DiffusionModel):
             .requires_grad_(False)
         )
 
-        logger.info("Anima model ready on %s (%s)", device, dtype)
+        logger.info("Anima model ready on %s (%s)", config.device, config.dtype)
 
     # ------------------------------------------------------------ kernels
     def encode_prompt(
@@ -136,27 +122,25 @@ class AnimaModel(DiffusionModel):
             crossattn_emb[~embed[3].bool()] = 0
             return crossattn_emb.to(torch.bfloat16)
 
-    def init_latents(self, height: int, width: int, seed: int) -> torch.Tensor:
+    def init_latents(self, params: SamplingParams) -> torch.Tensor:
         dev = torch.device(self.device)
         num_channels = self.dit.LATENT_CHANNELS
-        shape = (1, num_channels, height // self._VAE_SCALE, width // self._VAE_SCALE)
-        generator = torch.Generator(device=dev).manual_seed(seed)
+        shape = (1, num_channels, params.height // self._VAE_SCALE, params.width // self._VAE_SCALE)
+        generator = torch.Generator(device=dev).manual_seed(params.seed)
         return torch.randn(shape, generator=generator, device=dev, dtype=self.dtype)
 
     def prepare_latent(
         self,
         latents: torch.Tensor,
         cond: Conditioning,
-        steps: int,
-        height: int,
-        width: int,
+        params: SamplingParams,
     ) -> torch.Tensor:
         # The Anima DiT expects a frame axis: [B, C, H, W] -> [B, C, 1, H, W].
         return latents.unsqueeze(2)
 
-    def schedule(self, steps: int, height: int, width: int) -> list[Step]:
+    def schedule(self, params: SamplingParams) -> list[Step]:
         dev = torch.device(self.device)
-        timesteps, sigmas = anima_sampling.get_timesteps_sigmas(steps, self.DEFAULT_FLOW_SHIFT, dev)
+        timesteps, sigmas = anima_sampling.get_timesteps_sigmas(params.steps, self.DEFAULT_FLOW_SHIFT, dev)
         timesteps = (timesteps / 1000).to(dev, dtype=self.dtype)
         sigmas = sigmas.to(dev)
         return [
@@ -180,7 +164,7 @@ class AnimaModel(DiffusionModel):
                 noise_pred = uncond + guidance_scale * (noise_pred - uncond)
         return noise_pred
 
-    def finalize_latent(self, latents: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    def finalize_latent(self, latents: torch.Tensor, params: SamplingParams) -> torch.Tensor:
         # Drop the frame axis back to canonical 4D: [B, C, 1, H, W] -> [B, C, H, W].
         return latents.squeeze(2)
 

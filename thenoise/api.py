@@ -20,10 +20,6 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
-from PIL import Image
-
-from .runtime import NotLoadedError
-
 logger = logging.getLogger(__name__)
 
 _UI_DIR = os.path.join(os.path.dirname(__file__), "ui")
@@ -48,6 +44,29 @@ class Text2ImageRequest(BaseModel):
     pixel_upscaler: Optional[str] = None  # name (no .safetensors) in upscaler_dir
     out: Literal["png", "json"] = "png"
 
+    def to_request(self):
+        """Convert this wire request into a ``GenerateRequest`` for the controller."""
+        from .models.config import GenerateRequest
+
+        return GenerateRequest(
+            prompt=self.prompt,
+            negative_prompt=self.negative_prompt,
+            width=self.width,
+            height=self.height,
+            steps=self.steps,
+            guidance_scale=self.guidance_scale,
+            seed=self.seed,
+            upscale=self.upscale,
+            upscale_factor=self.upscale_factor,
+            upscale_type=self.upscale_type,
+            sampler=self.sampler,
+            qwen_vae_enhance=self.qwen_vae_enhance,
+            film_grain=self.film_grain,
+            sharpening=self.sharpening,
+            lora_specs=self.lora_specs,
+            pixel_upscaler=self.pixel_upscaler,
+        )
+
 
 def create_app(runtime) -> FastAPI:
     app = FastAPI(title="thenoise", version="0.1.0")
@@ -64,46 +83,27 @@ def create_app(runtime) -> FastAPI:
     @app.get("/lora")
     def loras():
         """List available LoRA names (short, no .safetensors suffix)."""
-        try:
-            model = runtime.model
-        except NotLoadedError:
+        pipeline = runtime.pipeline
+        if pipeline is None:
             return Response(status_code=503, content="no model is loaded")
-        return {"loras": model.list_loras()}
+        return {"loras": pipeline.list_loras()}
 
     @app.get("/upscalers")
     def upscalers():
-        """List available pixel upscaler names (short, no .safetensors suffix)."""
-        try:
-            model = runtime.model
-        except NotLoadedError:
-            return Response(status_code=503, content="no model is loaded")
-        return {"upscalers": model.list_pixel_upscalers()}
+        """List available pixel upscaler names (short, no .safetensors suffix).
+
+        Pixel upscalers are a pixel-space / server concern and need no diffusion
+        model, so this works even when no model is loaded.
+        """
+        return {"upscalers": runtime.pixel_upscalers.list()}
 
     @app.post("/text2image")
     def text2image(req: Text2ImageRequest):
-        try:
-            model = runtime.model
-        except NotLoadedError:
+        pipeline = runtime.pipeline
+        if pipeline is None:
             return Response(status_code=503, content="no model is loaded")
         try:
-            image = model.generate(
-                prompt=req.prompt,
-                negative_prompt=req.negative_prompt,
-                width=req.width,
-                height=req.height,
-                steps=req.steps,
-                guidance_scale=req.guidance_scale,
-                seed=req.seed,
-                upscale=req.upscale,
-                upscale_factor=req.upscale_factor,
-                upscale_type=req.upscale_type,
-                sampler=req.sampler,
-                qwen_vae_enhance=req.qwen_vae_enhance,
-                film_grain=req.film_grain,
-                sharpening=req.sharpening,
-                lora_specs=req.lora_specs,
-                pixel_upscaler=req.pixel_upscaler,
-            )
+            image = pipeline.generate(req.to_request())
         except Exception as e:  # surface generation errors cleanly
             logger.exception("generation failed")
             return Response(status_code=500, content=f"generation failed: {e}")

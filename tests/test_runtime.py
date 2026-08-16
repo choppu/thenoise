@@ -37,7 +37,8 @@ def test_load_resolves_model_from_dit(monkeypatch):
     runtime.load(ModelPaths("dit", "vae", "te"))
     assert runtime.available() == ["fake"]
     assert runtime.model_name == "fake"
-    assert constructed[0]["dit_path"] == "dit"
+    assert constructed[0]["config"].dit_path == "dit"
+    assert runtime.pipeline is not None
 
 
 def test_load_swaps_single_model(monkeypatch):
@@ -47,4 +48,22 @@ def test_load_swaps_single_model(monkeypatch):
     runtime.load(ModelPaths("dit2", "vae2", "te2"))
     assert runtime.available() == ["fake"]
     assert len(constructed) == 2
-    assert constructed[1]["dit_path"] == "dit2"
+    assert constructed[1]["config"].dit_path == "dit2"
+
+
+def test_upscaler_dir_is_server_config(monkeypatch, tmp_path):
+    """upscaler_dir comes from Settings (server config), not ModelPaths."""
+    import thenoise.models as dm
+
+    class FakeModel:
+        name = "fake"
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(dm, "MODEL_CATALOG", [FakeModel])
+    monkeypatch.setattr(dm, "resolve", lambda path: FakeModel)
+
+    runtime = Runtime(Settings(upscaler_dir=str(tmp_path)))
+    assert runtime.pixel_upscalers.upscaler_dir == str(tmp_path)
+    runtime.load(ModelPaths("dit", "vae", "te"))
+    assert runtime.pipeline is not None

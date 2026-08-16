@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import List, Optional
 
 import torch
 from einops import rearrange
@@ -16,6 +15,7 @@ from thenoise.models.base import (
     Step,
     normalize_keys,
 )
+from thenoise.models.config import ModelConfig, SamplingParams
 from thenoise.utils.math import round_up
 from thenoise.vae import load_qwen_vae
 
@@ -56,35 +56,21 @@ class Krea2Model(DiffusionModel):
     def __init__(
         self,
         *,
-        dit_path: str,
-        vae_path: str,
-        text_encoder_path: str,
-        device: str = "cuda",
-        dtype: torch.dtype = torch.bfloat16,
-        lora_dir: Optional[str] = None,
-        upscaler_dir: Optional[str] = None,
+        config: ModelConfig,
     ):
-        super().__init__(
-            dit_path=dit_path,
-            vae_path=vae_path,
-            text_encoder_path=text_encoder_path,
-            device=device,
-            dtype=dtype,
-            lora_dir=lora_dir,
-            upscaler_dir=upscaler_dir,
-        )
+        super().__init__(config=config)
 
-        logger.info("Loading Krea 2 DiT from %s", dit_path)
+        logger.info("Loading Krea 2 DiT from %s", config.dit_path)
         self.dit = krea2_utils.load_krea2_dit(
-            dit_path,
-            device=device,
-            dtype=dtype,
+            config.dit_path,
+            device=config.device,
+            dtype=config.dtype,
         )
         self.dit.eval().requires_grad_(False)
 
-        logger.info("Loading Krea 2 text encoder from %s", text_encoder_path)
+        logger.info("Loading Krea 2 text encoder from %s", config.text_encoder_path)
         self.encoder = krea2_utils.load_krea2_text_encoder(
-            text_encoder_path, dtype=dtype, device=device
+            config.text_encoder_path, dtype=config.dtype, device=config.device
         )
 
         # Qwen-Image VAE
@@ -98,7 +84,7 @@ class Krea2Model(DiffusionModel):
         # VAE latent geometry (shared Qwen-Image VAE): 8x spatial compression.
         self._compression = self.vae.compression
 
-        logger.info("Krea 2 model ready on %s (%s)", device, dtype)
+        logger.info("Krea 2 model ready on %s (%s)", config.device, config.dtype)
 
     # ------------------------------------------------------------ kernels
     def encode_prompt(
@@ -135,14 +121,14 @@ class Krea2Model(DiffusionModel):
             null_mask=untxtmask,
         )
 
-    def init_latents(self, height: int, width: int, seed: int) -> torch.Tensor:
+    def init_latents(self, params: SamplingParams) -> torch.Tensor:
         dev = torch.device(self.device)
-        generator = torch.Generator(device=dev).manual_seed(seed)
+        generator = torch.Generator(device=dev).manual_seed(params.seed)
         return torch.randn(
             1,
             self.vae.z_dim,
-            height // self._compression,
-            width // self._compression,
+            params.height // self._compression,
+            params.width // self._compression,
             device=dev,
             dtype=self.dtype,
             generator=generator,
@@ -152,9 +138,7 @@ class Krea2Model(DiffusionModel):
         self,
         latents: torch.Tensor,
         cond: Conditioning,
-        steps: int,
-        height: int,
-        width: int,
+        params: SamplingParams,
     ) -> torch.Tensor:
         """Patchify the canonical latent and build pos/mask for the DiT, ONCE.
 
@@ -184,14 +168,14 @@ class Krea2Model(DiffusionModel):
 
         return img
 
-    def schedule(self, steps: int, height: int, width: int) -> list[Step]:
+    def schedule(self, params: SamplingParams) -> list[Step]:
         patch = self.dit.config.patch
         align = self._compression * patch
-        seq_len = (height // align) * (width // align)
+        seq_len = (params.height // align) * (params.width // align)
         x1 = (self.DEFAULT_MINRES // align) ** 2
         x2 = (self.DEFAULT_MAXRES // align) ** 2
         ts = timesteps(
-            seq_len, steps, x1, x2,
+            seq_len, params.steps, x1, x2,
             y1=self.DEFAULT_Y1, y2=self.DEFAULT_Y2, mu=self.DEFAULT_MU,
         )
         return [Step(t=ts[i], delta=ts[i] - ts[i + 1]) for i in range(len(ts) - 1)]
@@ -220,11 +204,11 @@ class Krea2Model(DiffusionModel):
                 v = cond_out
         return v
 
-    def finalize_latent(self, latents: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    def finalize_latent(self, latents: torch.Tensor, params: SamplingParams) -> torch.Tensor:
         # Unpatchify back to the canonical 4D latent [B, C, H//8, W//8].
         patch = self.dit.config.patch
-        h_ = height // (self._compression * patch)
-        w_ = width // (self._compression * patch)
+        h_ = params.height // (self._compression * patch)
+        w_ = params.width // (self._compression * patch)
         return rearrange(
             latents,
             "b (h w) (c ph pw) -> b c (h ph) (w pw)",

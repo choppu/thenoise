@@ -7,7 +7,6 @@ the Flux VAE (decoder) and a Qwen3 caption encoder instead of the Qwen-Image VAE
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
 
 import torch
 
@@ -23,6 +22,7 @@ from thenoise.models.base import (
     Step,
     normalize_keys,
 )
+from thenoise.models.config import ModelConfig, SamplingParams
 from thenoise.utils.math import round_up
 from thenoise.vae import load_flux_vae
 
@@ -62,34 +62,20 @@ class ZImageModel(DiffusionModel):
     def __init__(
         self,
         *,
-        dit_path: str,
-        vae_path: str,
-        text_encoder_path: str,
-        device: str = "cuda",
-        dtype: torch.dtype = torch.bfloat16,
-        lora_dir: Optional[str] = None,
-        upscaler_dir: Optional[str] = None,
+        config: ModelConfig,
     ):
-        super().__init__(
-            dit_path=dit_path,
-            vae_path=vae_path,
-            text_encoder_path=text_encoder_path,
-            device=device,
-            dtype=dtype,
-            lora_dir=lora_dir,
-            upscaler_dir=upscaler_dir,
-        )
+        super().__init__(config=config)
 
-        logger.info("Loading Z-Image DiT from %s", dit_path)
-        self.dit = load_zimage_dit(dit_path, device=device, dtype=dtype)
+        logger.info("Loading Z-Image DiT from %s", config.dit_path)
+        self.dit = load_zimage_dit(config.dit_path, device=config.device, dtype=config.dtype)
         self.dit.eval().requires_grad_(False)
 
-        logger.info("Loading Z-Image text encoder from %s", text_encoder_path)
+        logger.info("Loading Z-Image text encoder from %s", config.text_encoder_path)
         self.text_encoder, self.tokenizer = load_zimage_text_encoder(
-            text_encoder_path,
-            dtype=dtype,
-            device=device,
-            tokenizer_dir=find_zimage_tokenizer_dir(text_encoder_path),
+            config.text_encoder_path,
+            dtype=config.dtype,
+            device=config.device,
+            tokenizer_dir=find_zimage_tokenizer_dir(config.text_encoder_path),
         )
         self.text_encoder.eval().requires_grad_(False)
 
@@ -97,7 +83,7 @@ class ZImageModel(DiffusionModel):
         self.vae = load_flux_vae(self.vae_path, device=self.device, disable_mmap=True, dtype=self.dtype)
         self.vae.eval().requires_grad_(False)
 
-        logger.info("Z-Image model ready on %s (%s)", device, dtype)
+        logger.info("Z-Image model ready on %s (%s)", config.device, config.dtype)
 
     # ------------------------------------------------------------ kernels
     def encode_prompt(
@@ -140,26 +126,24 @@ class ZImageModel(DiffusionModel):
             valid = emb[0][mask[0]]  # [n_valid, 2560]
         return valid.unsqueeze(0).to(self.dtype)
 
-    def init_latents(self, height: int, width: int, seed: int) -> torch.Tensor:
+    def init_latents(self, params: SamplingParams) -> torch.Tensor:
         dev = torch.device(self.device)
-        shape = (1, self.dit.in_channels, height // self._VAE_SCALE, width // self._VAE_SCALE)
-        generator = torch.Generator(device=dev).manual_seed(seed)
+        shape = (1, self.dit.in_channels, params.height // self._VAE_SCALE, params.width // self._VAE_SCALE)
+        generator = torch.Generator(device=dev).manual_seed(params.seed)
         return torch.randn(shape, generator=generator, device=dev, dtype=self.dtype)
 
     def prepare_latent(
         self,
         latents: torch.Tensor,
         cond: Conditioning,
-        steps: int,
-        height: int,
-        width: int,
+        params: SamplingParams,
     ) -> torch.Tensor:
         # The DiT expects an F (frame) axis: [B, C, H, W] -> [B, C, 1, H, W].
         return latents.unsqueeze(2)
 
-    def schedule(self, steps: int, height: int, width: int) -> list[Step]:
+    def schedule(self, params: SamplingParams) -> list[Step]:
         dev = torch.device(self.device)
-        sigmas = zimage_sampling.get_sigmas(steps, dev)
+        sigmas = zimage_sampling.get_sigmas(params.steps, dev)
         # Step.t carries the *sigma* grid (1 -> 1/steps -> 0). Both solvers consume
         # it as sigma: the Euler loop integrates ``x -= delta * v`` (delta = sigma_i -
         # sigma_{i+1}) and ER-SDE reconstructs its sigmas from Step.t. The model's
@@ -199,7 +183,7 @@ class ZImageModel(DiffusionModel):
                 v = v_pos
         return v
 
-    def finalize_latent(self, latents: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    def finalize_latent(self, latents: torch.Tensor, params: SamplingParams) -> torch.Tensor:
         # Drop the F axis back to canonical 4D: [B, C, 1, H, W] -> [B, C, H, W].
         return latents.squeeze(2)
 

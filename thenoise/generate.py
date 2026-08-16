@@ -15,15 +15,16 @@ logger = logging.getLogger(__name__)
 
 
 def run_generate(args) -> None:
+    from .models.config import GenerateRequest
     from .runtime import Settings, ModelPaths, Runtime
     settings = Settings(device=args.device)
 
     runtime = Runtime(settings)
 
     # ``--pixel-upscaler`` is a one-shot convenience: a full path to the model.
-    # Split it into ``upscaler_dir`` + ``pixel_upscaler`` (name, sans suffix)
-    # before passing it down the chain, so the runtime/model only ever see the
-    # same directory + name form as the ``serve``/API path.
+    # Split it into ``upscaler_dir`` (server config) + ``pixel_upscaler`` (name,
+    # sans suffix) so the runtime/controller only ever see the same directory +
+    # name form as the ``serve``/API path.
     upscaler_dir = ""
     pixel_upscaler = None
     if args.pixel_upscaler:
@@ -31,6 +32,7 @@ def run_generate(args) -> None:
         pixel_upscaler = os.path.basename(args.pixel_upscaler)
         if pixel_upscaler.endswith(".safetensors"):
             pixel_upscaler = pixel_upscaler[: -len(".safetensors")]
+        settings.upscaler_dir = upscaler_dir
 
     runtime.load(
         ModelPaths(
@@ -38,12 +40,11 @@ def run_generate(args) -> None:
             vae_path=args.vae,
             text_encoder_path=args.text_encoder,
             lora_dir=args.lora_dir,
-            upscaler_dir=upscaler_dir,
         ),
     )
 
     seed = args.seed if args.seed is not None else random.randint(0, 2**32 - 1)
-    image = runtime.model.generate(
+    request = GenerateRequest(
         prompt=args.prompt,
         negative_prompt=args.negative_prompt,
         width=args.width,
@@ -61,6 +62,7 @@ def run_generate(args) -> None:
         lora_specs=args.lora or None,
         pixel_upscaler=pixel_upscaler,
     )
+    image = runtime.pipeline.generate(request)
 
     image.save(args.out, pnginfo=getattr(image, "_pnginfo", None))
     logger.info("saved %s (model=%s, seed=%s)", args.out, runtime.model_name, seed)

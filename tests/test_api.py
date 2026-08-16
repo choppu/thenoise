@@ -1,30 +1,31 @@
-"""API tests using a fake model (no torch, no weights, no TestClient)."""
+"""API tests using a fake runtime (no torch, no weights, no TestClient)."""
 from __future__ import annotations
 
 from thenoise.api import create_app, Text2ImageRequest
 from thenoise.runtime import Settings, Runtime
 
 
-def _fake_runtime():
-    class FakeModel:
-        name = "fake"
-        loras = ["style", "pose"]
-        upscalers = ["RealESRGAN_x4", "sub/x2"]
-
-        def list_loras(self):
-            return list(self.loras)
-
-        def list_pixel_upscalers(self):
-            return list(self.upscalers)
-
-        def generate(self, **kwargs):
-            self.last_kwargs = kwargs
+def _fake_runtime(tmp_path=None):
+    """Runtime with a fake pipeline + fake model (and optionally upscalers dir)."""
+    class FakePipeline:
+        def generate(self, request):
+            self.last_request = request
             from PIL import Image
             return Image.new("RGB", (8, 8))
 
+        def list_loras(self):
+            return ["style", "pose"]
+
     runtime = Runtime(Settings())
-    runtime._model = FakeModel()
+    runtime._pipeline = FakePipeline()
+    runtime._model = object()
     runtime._model_name = "fake"
+
+    if tmp_path is not None:
+        (tmp_path / "RealESRGAN_x4.safetensors").write_text("x")
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "x2.safetensors").write_text("x")
+        runtime._pixel_upscalers.upscaler_dir = str(tmp_path)
     return runtime
 
 
@@ -39,25 +40,26 @@ def _endpoint(app, path):
     raise AssertionError(f"no route {path}")
 
 
-def test_upscalers_lists_names():
-    app = create_app(_fake_runtime())
+def test_upscalers_lists_names(tmp_path):
+    app = create_app(_fake_runtime(tmp_path))
     res = _endpoint(app, "/upscalers")()
     assert res["upscalers"] == ["RealESRGAN_x4", "sub/x2"]
 
 
-def test_upscalers_503_when_no_model():
+def test_upscalers_available_without_model():
+    # Pixel upscalers are a pixel-space/server concern and need no diffusion model.
     app = create_app(_empty_runtime())
     res = _endpoint(app, "/upscalers")()
-    assert res.status_code == 503
+    assert res["upscalers"] == []
 
 
-def test_text2image_passes_pixel_upscaler():
-    runtime = _fake_runtime()
+def test_text2image_passes_pixel_upscaler(tmp_path):
+    runtime = _fake_runtime(tmp_path)
     app = create_app(runtime)
     req = Text2ImageRequest(prompt="a fox", pixel_upscaler="RealESRGAN_x4")
     res = _endpoint(app, "/text2image")(req)
     assert res.status_code == 200
-    assert runtime.model.last_kwargs["pixel_upscaler"] == "RealESRGAN_x4"
+    assert runtime._pipeline.last_request.pixel_upscaler == "RealESRGAN_x4"
 
 
 def test_request_field_defaults_none():
