@@ -14,7 +14,7 @@ their own VAE:
   * ``finalize_latent(...)`` — model-internal -> canonical latent (once, post-loop).
   * ``resolve_size(...)``    — per-model size rounding / validation.
   * ``_upscale_format(...)``  — required: the latent-format name for this
-    model's VAE (selected by ``load_upscaler``).
+    model's VAE (selected by ``load_latent_upscaler``).
 
 Both models use the same Qwen-Image VAE (z_dim=16, spatial compression 8), so
 ``init_latents`` produces and ``finalize_latent`` returns the canonical latent
@@ -34,6 +34,26 @@ mantissa causes banding in image filters); the tensor is only cast to uint8 and
 moved to CPU inside ``_to_pil``. Metadata that must live on the final PNG is a
 separate concern and is added later, after the PIL conversion.
 
+Upscaling has two modes, driven by ``upscale_factor`` (f in (0.0, 8.0]) and
+``upscale_type``:
+
+  * ``refined`` (default): the latent (Sesqui) upscaler runs ``UPSCALE_SCALE``x
+    in latent space followed by a low-strength refine denoise. For f in (1, 2]
+    that 2x is the whole upscale; for f in (2, ...] a pixel-domain upscaler
+    step (scale auto-detected from the model, 2/4) is added on the decoded
+    image and the result is downscaled to f.
+  * ``no-refiner``: only the pixel-domain upscaler step runs on the decoded
+    image (no latent 2x multiplier), so f is capped at the detected scale.
+
+Pixel-domain upscalers are selected by name from ``upscaler_dir`` (CLI
+``--upscaler-dir``); the request's ``pixel_upscaler`` picks which model in that
+directory is used. Today the only pixel-space upscaler is Real-ESRGAN, but the
+nomenclature is kept generic so future pixel upscalers pass through the same
+options. Only the last-used pixel upscaler is kept loaded (switched on change).
+Without a pixel upscaler only ``refined`` factors <= 2 are available. Max factor
+ranges follow the detected model scale: ``refined`` up to ``UPSCALE_SCALE *
+pixel_scale``, ``no-refiner`` up to ``pixel_scale``.
+
 Pipeline caching
 ----------------
 Each stage of the generate pipeline is cached (single-entry, on-device tensors).
@@ -43,11 +63,13 @@ embeds the sampling key. This gives automatic cascade invalidation — a change
 at any stage invalidates that stage and all downstream stages.
 
   Stage          | Cache key depends on                    | Cached value
-  ---------------+-----------------------------------------+---------------
+  ---------------+-----------------------------------------------+-----------
   Prompt         | prompt, negative_prompt, guidance_scale, lora_specs | Conditioning
   Sampling       | prompt_key + size, steps, seed, sampler, lora_specs | latents
   Upscale+refine | (driven by decode cache hit below)      | —
-  VAE decode     | sampling_key (+ upscale constants)      | pixels (fp32)
+  VAE decode     | sampling_key + refined constants        | pixels (fp32)
+  Notch filter   | (not cached; runs right after decode)   | —
+  ESRGAN/resize  | (not cached)                            | —
   Postprocess    | (not cached — cheap)                    | —
 
 LoRA switching
@@ -69,10 +91,21 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from safetensors.torch import load_file
 
-from thenoise.upscale import load_upscaler
+from thenoise.upscale import (
+    load_latent_upscaler,
+    load_pixel_upscaler,
+    detect_pixel_upscaler_scale,
+)
+from thenoise.utils.model_dir import (
+    ensure_safetensors,
+    strip_safetensors,
+    resolve_in_dir,
+    list_safetensors,
+)
 from thenoise.samplers import Step, create_sampler
 from thenoise.samplers.euler import EulerSampler
 from thenoise.utils.lora import apply_lora_to_model, undo_lora_on_model
@@ -164,6 +197,7 @@ class DiffusionModel(ABC):
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         lora_dir: Optional[str] = None,
+        upscaler_dir: Optional[str] = None,
     ):
         self.device = device
         self.dtype = dtype
@@ -171,6 +205,7 @@ class DiffusionModel(ABC):
         self.vae_path = vae_path
         self.text_encoder_path = text_encoder_path
         self.lora_dir = lora_dir
+        self.upscaler_dir = upscaler_dir
         self._lock = threading.Lock()
 
         torch._dynamo.config.recompile_limit = 64
@@ -189,6 +224,14 @@ class DiffusionModel(ABC):
         # ``_upscale_format`` supplies the latent-format name matching the VAE.
         self._upscaler = None
         self._adaptor = None
+
+        # Lazy pixel-domain upscaler, kept only while it is the last-used one.
+        # ``upscaler_dir`` holds the available models; a request selects one by
+        # name via ``pixel_upscaler``. The currently loaded model is cached so
+        # repeated requests reuse it and a different name unloads the previous.
+        self._pixel_upscaler = None
+        self._pixel_upscaler_name: Optional[str] = None  # currently loaded name
+        self._pixel_upscaler_scales: Dict[str, int] = {}  # per-name detected scale
 
     # ------------------------------------------------------------------ hooks
     @abstractmethod
@@ -265,7 +308,7 @@ class DiffusionModel(ABC):
             filename = spec
             weight = 1.0
 
-        filename = filename + ".safetensors"
+        filename = ensure_safetensors(filename)
 
         return filename, weight
 
@@ -273,18 +316,9 @@ class DiffusionModel(ABC):
         """Resolve a LoRA filename to an absolute path, guarded against traversal.
 
         Subdirectories are allowed, but .. components that would escape lora_dir
-        raise ValueError.
+        raise ValueError. Shared path logic lives in ``utils.model_dir``.
         """
-        if not self.lora_dir:
-            raise ValueError("lora_dir is not set")
-
-        base = os.path.abspath(self.lora_dir)
-        candidate = os.path.abspath(os.path.join(self.lora_dir, filename))
-
-        if not candidate.startswith(base + os.sep) and candidate != base:
-            raise ValueError("LoRA path escapes lora_dir")
-
-        return candidate
+        return resolve_in_dir(self.lora_dir, filename)
 
     def _get_lora_sd(self, filename: str) -> Dict[str, torch.Tensor]:
         """Load a LoRA state dict from disk."""
@@ -349,20 +383,85 @@ class DiffusionModel(ABC):
     def list_loras(self) -> List[str]:
         """List available LoRA names relative to lora_dir.
 
-        Subdirectories are scanned recursively. Names are relative paths with the
-        .safetensors suffix stripped (e.g. "12345_something" or "sub/style"), so
-        they can be used directly as lora_specs (which auto-appends the suffix).
+        Names are relative paths with the .safetensors suffix stripped (e.g.
+        "12345_something" or "sub/style"), so they can be used directly as
+        lora_specs (which auto-appends the suffix). Shared listing logic lives
+        in ``utils.model_dir``.
         """
-        if not self.lora_dir:
-            return []
-        names = []
-        for root, _dirs, files in os.walk(self.lora_dir):
-            for name in sorted(files):
-                if not name.endswith(".safetensors"):
-                    continue
-                rel = os.path.relpath(os.path.join(root, name), self.lora_dir)
-                names.append(rel[: -len(".safetensors")])
-        return sorted(names)
+        return list_safetensors(self.lora_dir)
+
+    # ---------------------------------------------------------- pixel upscaler
+    def _parse_pixel_upscaler_name(self, name: str) -> str:
+        """Return the canonical pixel-upscaler name (strip optional suffix)."""
+        return strip_safetensors(name)
+
+    def _resolve_pixel_upscaler_path(self, filename: str) -> str:
+        """Resolve a pixel-upscaler filename within upscaler_dir (guarded)."""
+        return resolve_in_dir(self.upscaler_dir, filename)
+
+    def list_pixel_upscalers(self) -> List[str]:
+        """List available pixel-upscaler names relative to upscaler_dir.
+
+        Names are relative paths with the .safetensors suffix stripped, so they
+        can be used directly as the request's ``pixel_upscaler`` value. Shared
+        listing logic lives in ``utils.model_dir``.
+        """
+        return list_safetensors(self.upscaler_dir)
+
+    def _validate_pixel_upscaler(self, name: str) -> str:
+        """Validate a pixel-upscaler name; return its canonical form.
+
+        Raises if no ``upscaler_dir`` is configured or the named model does not
+        exist in it.
+        """
+        if not self.upscaler_dir:
+            raise ValueError(
+                "no pixel upscaler configured; pass --upscaler-dir PATH "
+                "(or run scripts/download_esrgan.py)"
+            )
+        name = self._parse_pixel_upscaler_name(name)
+        filepath = self._resolve_pixel_upscaler_path(ensure_safetensors(name))
+        if not os.path.isfile(filepath):
+            raise ValueError(
+                f"pixel upscaler '{name}' not found in {self.upscaler_dir}"
+            )
+        return name
+
+    def _pixel_upscaler_scale(self, name: str) -> int:
+        """Detected scale of the requested pixel upscaler (0 if none), cached.
+
+        Reads only the safetensors header on first use per name; the value is
+        then reused. Tests may pre-populate ``_pixel_upscaler_scales`` to skip
+        file access.
+        """
+        if not self.upscaler_dir or not name:
+            return 0
+        name = self._parse_pixel_upscaler_name(name)
+        scale = self._pixel_upscaler_scales.get(name)
+        if scale is None:
+            filepath = self._resolve_pixel_upscaler_path(ensure_safetensors(name))
+            scale = detect_pixel_upscaler_scale(filepath)
+            self._pixel_upscaler_scales[name] = scale
+        return scale
+
+    def _switch_pixel_upscaler(self, name: str) -> None:
+        """Load the requested pixel upscaler, keeping only the last-used loaded.
+
+        Swaps (unloads) any previously loaded upscaler when the requested name
+        differs; repeated requests with the same name are no-ops. Must be called
+        under the inference lock (it loads weights onto the device).
+        """
+        name = self._parse_pixel_upscaler_name(name)
+        if self._pixel_upscaler_name == name:
+            return  # no-op: same upscaler
+        logger = __import__("logging").getLogger(__name__)
+        filepath = self._resolve_pixel_upscaler_path(ensure_safetensors(name))
+        logger.info("Loading pixel upscaler: %s", filepath)
+        self._pixel_upscaler, scale = load_pixel_upscaler(
+            filepath, device=self.device
+        )
+        self._pixel_upscaler_name = name
+        self._pixel_upscaler_scales[name] = scale
 
     def percent_to_sigma(self, percent: float) -> float:
         """Map a percent (0..1) to a sigma, used by the sampler's SNR offset.
@@ -419,18 +518,20 @@ class DiffusionModel(ABC):
     def _cache_key_decode(
         self,
         sampling_key: Tuple,
-        upscale: bool,
+        refined: bool,
     ) -> Tuple:
         """Cache key for the VAE decode stage.
 
         Embeds the sampling key so any upstream change cascades.
-        When upscale is True the upscale-and-refine pipeline produces
-        different latents, so the upscale class-constants are added.
+        When ``refined`` is True the latent upscale-and-refine pipeline produces
+        different latents (at 2x), so the refined constants are added to the key.
+        The pixel-domain ESRGAN step is deliberately NOT cached (it is fast), so
+        it does not participate in the key.
         """
-        if not upscale:
+        if not refined:
             return ("decode", sampling_key)
         return (
-            "decode_upscale",
+            "decode_refined",
             sampling_key,
             self.UPSCALE_SCALE,
             self.REFINE_STEPS,
@@ -449,11 +550,14 @@ class DiffusionModel(ABC):
         guidance_scale: Optional[float] = None,
         seed: Optional[int] = None,
         upscale: bool = False,
+        upscale_factor: float = 1.0,
+        upscale_type: str = "refined",
         sampler: Optional[str] = None,
         qwen_vae_enhance: bool = False,
         film_grain: float = 0.0,
         sharpening: float = 0.0,
         lora_specs: Optional[List[str]] = None,
+        pixel_upscaler: Optional[str] = None,
     ) -> Image.Image:
         """Encode -> denoise -> decode -> postprocess. Returns a single PIL image.
 
@@ -472,11 +576,26 @@ class DiffusionModel(ABC):
             else guidance_scale
         )
 
-        target_width, target_height = width, height
-        if upscale:
-            target_width *= self.UPSCALE_SCALE
-            target_height *= self.UPSCALE_SCALE
+        # Resolve upscale parameters: ``upscale`` is a legacy alias for a 2x
+        # refined upscale; an explicit factor/type overrides it. A requested
+        # pixel upscaler is validated (exists in upscaler_dir) before planning.
+        if pixel_upscaler:
+            pixel_upscaler = self._validate_pixel_upscaler(pixel_upscaler)
+        if upscale and upscale_factor == 1.0:
+            upscale_factor = float(self.UPSCALE_SCALE)
+        factor, upscale_type = self._resolve_upscale(
+            upscale_factor, upscale_type, pixel_upscaler
+        )
         width, height = self.resolve_size(width, height)
+        target_width = width
+        target_height = height
+        if factor != 1.0:
+            target_width = round(width * factor)
+            target_height = round(height * factor)
+        refined = upscale_type == "refined" and factor > 1.0
+        pixel_scale = self._pixel_upscaler_scale_for(
+            factor, upscale_type, pixel_upscaler
+        )
         effective_sampler = sampler or self.SAMPLER
 
         # seed=-1 is treated as "random" (same as None)
@@ -490,9 +609,7 @@ class DiffusionModel(ABC):
         sampling_key = self._cache_key_sampling(
             prompt_key, width, height, steps, seed, effective_sampler
         )
-        decode_key = self._cache_key_decode(
-            sampling_key, upscale,
-        )
+        decode_key = self._cache_key_decode(sampling_key, refined)
 
         # --- locked section: cache checks + model access ---
         with self._lock:
@@ -522,18 +639,29 @@ class DiffusionModel(ABC):
             if self._cache.decode_hit(decode_key):
                 pixels = self._cache.decode_get()
             else:
-                # Cache miss — run upscale (if requested) then decode
-                if upscale:
+                # Cache miss — run latent upscale+refine (if refined) then decode
+                if refined:
                     latents = self._upscale_and_refine(
                         latents, cond, steps, height, width, seed, guidance_scale
                     )
                 pixels = self.decode(latents)  # fp32 GPU tensor [C,H,W]
                 self._cache.decode_store(decode_key, pixels)
 
+            # Qwen notch filter must run immediately after VAE decode (before any
+            # pixel-domain upscaling), so the 2px grid pattern is removed at its
+            # native resolution.
+            if qwen_vae_enhance:
+                pixels = nyquist_notch(pixels)
+
+            # Pixel-domain upscaler (fast, not cached) + GPU resize to target size.
+            pixels = self._pixel_upscaler_step(
+                pixels, pixel_scale, pixel_upscaler
+            )
+            pixels = self._resize_to_target(pixels, target_width, target_height)
+
             # Stage 5: postprocess (cheap — not cached)
             pixels = self.postprocess(
                 pixels,
-                qwen_vae_enhance=qwen_vae_enhance,
                 film_grain_strength=film_grain,
                 sharpening=sharpening,
             )
@@ -547,17 +675,20 @@ class DiffusionModel(ABC):
                 model=self.name,
                 prompt=prompt,
                 negative_prompt=negative_prompt,
-                width=image.width,
-                height=image.height,
+                width=width,
+                height=height,
                 steps=steps,
                 guidance_scale=guidance_scale,
                 seed=seed,
                 upscale=upscale,
+                upscale_factor=factor,
+                upscale_type=upscale_type,
                 sampler=effective_sampler,
                 qwen_vae_enhance=qwen_vae_enhance,
                 film_grain=film_grain,
                 sharpening=sharpening,
                 lora_specs=lora_specs,
+                pixel_upscaler=pixel_upscaler,
             )
             image._pnginfo = pnginfo
             return image
@@ -594,19 +725,134 @@ class DiffusionModel(ABC):
 
         Concrete subclasses must override this to return the name of their VAE's
         latent format (e.g. ``"wan21"`` for the shared Qwen-Image VAE). It is
-        passed to ``load_upscaler``, which selects the adaptor and weight file.
+        passed to ``load_latent_upscaler``, which selects the adaptor and weight file.
         """
         ...
 
-    def _load_upscaler(self):
+    def _load_latent_upscaler(self):
         """Load the latent upscaler (once, lazily, under the lock)."""
         if self._upscaler is None:
-            self._upscaler, self._adaptor = load_upscaler(
+            self._upscaler, self._adaptor = load_latent_upscaler(
                 self._upscale_format(),
                 device=self.device,
                 dtype=self.dtype,
             )
         return self._upscaler, self._adaptor
+
+    # ------------------------------------------------------------- upscale plan
+    def _resolve_upscale(
+        self,
+        factor: float,
+        upscale_type: str,
+        pixel_upscaler: Optional[str] = None,
+    ) -> tuple[float, str]:
+        """Validate and return the effective (factor, type).
+
+        ``upscale_factor`` must be in (0.0, 8.0]. ``no-refiner`` mode has no
+        latent 2x multiplier so it is capped at the pixel-upscaler scale. A pixel
+        upscaler (selected by ``pixel_upscaler`` from ``upscaler_dir``) is
+        required for ``no-refiner`` and for ``refined`` factors above the latent
+        2x.
+        """
+        if upscale_type not in ("refined", "no-refiner"):
+            raise ValueError(
+                f"upscale_type must be 'refined' or 'no-refiner', "
+                f"got {upscale_type!r}"
+            )
+        if not 0.0 < factor <= 8.0:
+            raise ValueError("upscale_factor must be in (0.0, 8.0]")
+        scale = self._pixel_upscaler_scale(pixel_upscaler)
+        if scale == 0:
+            # No pixel upscaler: only ``refined`` factors up to the latent 2x work.
+            if factor > self.UPSCALE_SCALE:
+                raise ValueError(
+                    f"upscale_factor > {self.UPSCALE_SCALE} requires a pixel "
+                    "upscaler; pass --pixel-upscaler PATH (or run "
+                    "scripts/download_esrgan.py)"
+                )
+            if upscale_type == "no-refiner" and factor > 1.0:
+                raise ValueError(
+                    "upscale_type='no-refiner' requires a pixel upscaler; "
+                    "pass --pixel-upscaler PATH (or run "
+                    "scripts/download_esrgan.py)"
+                )
+        else:
+            # Max factor depends on the detected model scale: refined gets the
+            # latent 2x multiplier, no-refiner does not.
+            max_refined = self.UPSCALE_SCALE * scale
+            if upscale_type == "refined" and factor > max_refined:
+                raise ValueError(
+                    f"upscale_type='refined' with a {scale}x pixel upscaler is "
+                    f"limited to factor {max_refined}"
+                )
+            if upscale_type == "no-refiner" and factor > scale:
+                raise ValueError(
+                    f"upscale_type='no-refiner' with a {scale}x pixel upscaler "
+                    f"is limited to factor {scale}"
+                )
+        return factor, upscale_type
+
+    def _pixel_upscaler_scale_for(
+        self,
+        factor: float,
+        upscale_type: str,
+        pixel_upscaler: Optional[str] = None,
+    ) -> int:
+        """Pixel-upscaler scale to apply for (factor, type, name), or 0 to skip.
+
+        ``refined`` gets a 2x from the latent path, so the pixel upscaler is only
+        needed when the factor exceeds that 2x. ``no-refiner`` has no latent
+        multiplier and always needs it for any upscale. Uses the detected scale
+        of the requested ``pixel_upscaler``.
+        """
+        if not pixel_upscaler:
+            return 0
+        scale = self._pixel_upscaler_scale(pixel_upscaler)
+        if scale == 0 or factor <= 1.0:
+            return 0
+        if upscale_type == "no-refiner":
+            return scale
+        return scale if factor > self.UPSCALE_SCALE else 0
+
+    def _pixel_upscaler_step(
+        self,
+        pixels: torch.Tensor,
+        scale: int,
+        pixel_upscaler: Optional[str] = None,
+    ) -> torch.Tensor:
+        """Apply the pixel-domain upscaler by ``scale``x (if > 0).
+
+        Loads (or reuses) the requested pixel upscaler, keeping only the last-used
+        model loaded. The model operates on RGB in [0, 1] while the pipeline's
+        decoded pixels are in [-1, 1]; convert to [0, 1] before the model and back
+        afterwards so downstream postprocessing / ``_to_pil`` stay unchanged.
+        """
+        if not scale or not pixel_upscaler:
+            return pixels
+        self._switch_pixel_upscaler(pixel_upscaler)
+        model = self._pixel_upscaler
+        x = (pixels.unsqueeze(0) + 1.0) / 2.0  # [-1, 1] -> [0, 1]
+        with torch.no_grad():
+            out = model.forward_tiled(x)
+        out = out * 2.0 - 1.0  # [0, 1] -> [-1, 1]
+        return out[0]
+
+    @staticmethod
+    def _resize_to_target(
+        pixels: torch.Tensor, target_w: int, target_h: int
+    ) -> torch.Tensor:
+        """GPU bilinear resize of ``[C, H, W]`` to the target size (no-op if equal)."""
+        c, h, w = pixels.shape
+        if (w, h) == (target_w, target_h):
+            return pixels
+        with torch.no_grad():
+            return F.interpolate(
+                pixels.unsqueeze(0),
+                size=(target_h, target_w),
+                mode="bilinear",
+                align_corners=False,
+            )[0]
+
 
     def _upscale_and_refine(
         self,
@@ -625,7 +871,7 @@ class DiffusionModel(ABC):
         latent to/from that raw space. The refined result is the canonical latent
         at the upscaled spatial size, ready for ``decode``.
         """
-        upscaler, adaptor = self._load_upscaler()
+        upscaler, adaptor = self._load_latent_upscaler()
         scale = self.UPSCALE_SCALE
         z = latents.to(device=self.device, dtype=self.dtype)
 
@@ -691,13 +937,10 @@ class DiffusionModel(ABC):
         self,
         pixels: torch.Tensor,
         *,
-        qwen_vae_enhance: bool = False,
         film_grain_strength: float = 0.0,
         sharpening: float = 0.0,
     ) -> torch.Tensor:
         """Tensor post-processing hook. Runs on the fp32 GPU pixels."""
-        if qwen_vae_enhance:
-            pixels = nyquist_notch(pixels)
         if sharpening > 0.0:
             pixels = rcas(pixels, strength=sharpening)
         if film_grain_strength > 0.0:

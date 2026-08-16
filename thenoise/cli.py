@@ -25,6 +25,20 @@ def _add_model_paths(p: argparse.ArgumentParser) -> None:
                         "(subdirectories allowed)")
 
 
+def _add_upscaler_args(p: argparse.ArgumentParser) -> None:
+    """Add the pixel-upscaler flags for a subcommand.
+
+    ``serve`` exposes ``--upscaler-dir`` (a directory, selected per-request via
+    the ``pixel_upscaler`` API field). ``generate`` instead takes a one-shot
+    ``--pixel-upscaler`` full path, which is split internally into
+    ``upscaler_dir`` + ``pixel_upscaler`` before being passed down the chain.
+    """
+    p.add_argument("--upscaler-dir", default="", metavar="PATH",
+                   help="directory containing pixel upscaler .safetensors files "
+                        "(e.g. Real-ESRGAN); selected per-request via the "
+                        "'pixel_upscaler' API field")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="thenoise")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -32,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     # serve
     serve = sub.add_parser("serve", help="run the FastAPI HTTP server")
     _add_model_paths(serve)
+    _add_upscaler_args(serve)
     serve.add_argument("--host", default="127.0.0.1",
                        help="bind host (default: 127.0.0.1)")
     serve.add_argument("--port", type=int, default=8000,
@@ -42,6 +57,10 @@ def build_parser() -> argparse.ArgumentParser:
     # generate
     gen = sub.add_parser("generate", help="run one generation and save a PNG")
     _add_model_paths(gen)
+    gen.add_argument("--pixel-upscaler", default="", metavar="PATH",
+                     help="full path to the pixel upscaler model (.safetensors) "
+                          "to use for this one-shot generation (e.g. a Real-ESRGAN "
+                          "model)")
     gen.add_argument("--prompt", required=True)
     gen.add_argument("--negative-prompt", default="")
     gen.add_argument("--width", type=int)
@@ -57,6 +76,16 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--upscale", action="store_true",
                      help="upscale the latent 2x in latent space (SesquiLSR) and "
                           "run a low-strength refine denoise before decoding")
+    gen.add_argument("--upscale-factor", type=float, default=1.0,
+                     help="upscale factor, > 0.0 (default: 1.0 = no upscale); "
+                          "max depends on the pixel upscaler scale: 'no-refiner' "
+                          "is limited to the model scale, 'refined' to latent 2x * "
+                          "model scale")
+    gen.add_argument("--upscale-type", choices=["refined", "no-refiner"],
+                     default="refined",
+                     help="'refined' (default): latent 2x + refiner, plus pixel "
+                          "upscaler above factor 2; 'no-refiner': pixel upscaler "
+                          "only (no latent 2x)")
     gen.add_argument("--sampler", choices=["euler", "er_sde"], default=None,
                      help="denoising solver (default: er_sde)")
     gen.add_argument("--qwen-vae-enhance", action="store_true",

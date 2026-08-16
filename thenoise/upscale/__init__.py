@@ -1,15 +1,15 @@
 """SesquiLSR latent upscaler, vendored for thenoise.
 
-Krea2 and Anima use the shared Qwen-Image VAE (Wan21 z-score latent format), and
-Z-Image uses the Flux VAE (affine shift/scale latent format). The Wan21 and Flux
-upscaler weights are committed (``weights/*.safetensors``, ~6MB bf16 each).
-``load_upscaler`` takes a latent-format name and selects the adaptor factory +
-weight file from ``_UPSCALER_FORMATS``; formats without committed weights raise.
-See ``inference_adaptors.make_*`` for the available formats.
+Both models (Krea2, Anima) currently use the shared Qwen-Image VAE, so only the
+Wan21 upscaler weights are committed (``weights/upscaler_Wan21.safetensors``,
+~6MB bf16). ``load_latent_upscaler`` takes a latent-format name and selects the
+adaptor factory + weight file from ``_UPSCALER_FORMATS``; formats without
+committed weights raise. See ``inference_adaptors.make_*`` for the available
+formats.
 
 Usage:
-    model, adaptor = load_upscaler("flux", device="cuda", dtype=torch.bfloat16)
-    raw = adaptor.to_vae_latent(latent)          # pipeline -> raw VAE latent
+    model, adaptor = load_latent_upscaler("wan21", device="cuda", dtype=torch.bfloat16)
+    raw = adaptor.to_vae_latent(latent)          # normalized -> raw VAE latent
     up  = model(raw, (2*h, 2*w))                 # 2x latent upscale
     out = adaptor.from_vae_latent(up)            # raw -> pipeline latent
 """
@@ -35,6 +35,8 @@ from .inference_adaptors import (
 from .upscaler import LatentUpscaler
 
 logger = logging.getLogger(__name__)
+
+from .esrgan import load_esrgan, detect_esrgan_scale, detect_esrgan_scheme
 
 _WEIGHT_DIR = Path(__file__).resolve().parent / "weights"
 
@@ -62,7 +64,7 @@ def upscale_weight_path(filename: str) -> Path:
     return path
 
 
-def load_upscaler(
+def load_latent_upscaler(
     format_name: str,
     device: str | torch.device = "cuda",
     dtype: torch.dtype = torch.bfloat16,
@@ -99,6 +101,30 @@ def load_upscaler(
     return model, adaptor
 
 
+def load_pixel_upscaler(path: str, device: str = "cuda") -> tuple:
+    """Load a pixel-domain upscaler from a safetensors file.
+
+    Generic entry point so the model-facing code never names a specific pixel
+    upscaler architecture. Today the only pixel-space upscaler is Real-ESRGAN,
+    so this dispatches to ``load_esrgan``; future pixel upscalers plug in here.
+    Returns ``(model, scale)``.
+    """
+    return load_esrgan(path, device=device)
+
+
+def detect_pixel_upscaler_scale(path: str) -> int:
+    """Detect a pixel upscaler's upscale scale (2 or 4) from its header.
+
+    Generic wrapper around the ESRGAN scale detection; see
+    ``load_pixel_upscaler`` for the rationale.
+    """
+    return detect_esrgan_scale(path)
+
+
 __all__ = [
-    "load_upscaler",
+    "load_latent_upscaler",
+    "load_esrgan",
+    "detect_esrgan_scale",
+    "load_pixel_upscaler",
+    "detect_pixel_upscaler_scale",
 ]

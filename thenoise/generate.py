@@ -7,6 +7,7 @@ not given) so it can be reported for reproducibility.
 from __future__ import annotations
 
 import logging
+import os
 import random
 
 logging.basicConfig(level=logging.INFO)
@@ -18,12 +19,26 @@ def run_generate(args) -> None:
     settings = Settings(device=args.device)
 
     runtime = Runtime(settings)
+
+    # ``--pixel-upscaler`` is a one-shot convenience: a full path to the model.
+    # Split it into ``upscaler_dir`` + ``pixel_upscaler`` (name, sans suffix)
+    # before passing it down the chain, so the runtime/model only ever see the
+    # same directory + name form as the ``serve``/API path.
+    upscaler_dir = ""
+    pixel_upscaler = None
+    if args.pixel_upscaler:
+        upscaler_dir = os.path.dirname(args.pixel_upscaler)
+        pixel_upscaler = os.path.basename(args.pixel_upscaler)
+        if pixel_upscaler.endswith(".safetensors"):
+            pixel_upscaler = pixel_upscaler[: -len(".safetensors")]
+
     runtime.load(
         ModelPaths(
             dit_path=args.dit,
             vae_path=args.vae,
             text_encoder_path=args.text_encoder,
             lora_dir=args.lora_dir,
+            upscaler_dir=upscaler_dir,
         ),
     )
 
@@ -37,11 +52,14 @@ def run_generate(args) -> None:
         guidance_scale=args.guidance_scale,
         seed=seed,
         upscale=args.upscale,
+        upscale_factor=args.upscale_factor,
+        upscale_type=args.upscale_type,
         sampler=args.sampler,
         qwen_vae_enhance=args.qwen_vae_enhance,
         film_grain=args.film_grain,
         sharpening=args.sharpening,
         lora_specs=args.lora or None,
+        pixel_upscaler=pixel_upscaler,
     )
 
     image.save(args.out, pnginfo=getattr(image, "_pnginfo", None))

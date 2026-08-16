@@ -18,11 +18,14 @@ def build_pnginfo(
     guidance_scale: float,
     seed: int,
     upscale: bool,
+    upscale_factor: float,
+    upscale_type: str,
     sampler: str,
     qwen_vae_enhance: bool,
     film_grain: float,
     sharpening: float,
     lora_specs: Optional[List[str]],
+    pixel_upscaler: Optional[str],
 ) -> PngInfo:
     """Build a PngInfo object with generation metadata (JSON + human-readable).
 
@@ -43,11 +46,14 @@ def build_pnginfo(
         "guidance_scale": guidance_scale,
         "seed": seed,
         "upscale": upscale,
+        "upscale_factor": upscale_factor,
+        "upscale_type": upscale_type,
         "sampler": sampler,
         "qwen_vae_enhance": qwen_vae_enhance,
         "film_grain": film_grain,
         "sharpening": sharpening,
         "lora_specs": lora_specs,
+        "pixel_upscaler": pixel_upscaler,
     })
     pnginfo.add_text("generation_data", gen_data)
 
@@ -67,8 +73,13 @@ def build_pnginfo(
     ]
     if upscale:
         meta_parts.append("Upscale: true")
+    if upscale_factor != 1.0:
+        meta_parts.append(f"Upscale factor: {upscale_factor:g}")
+        meta_parts.append(f"Upscale type: {upscale_type}")
     if lora_specs:
         meta_parts.append(f"LoRA: {'; '.join(lora_specs)}")
+    if pixel_upscaler:
+        meta_parts.append(f"Pixel upscaler: {pixel_upscaler}")
     parts.append(", ".join(meta_parts))
     pnginfo.add_text("parameters", "\n".join(parts))
 

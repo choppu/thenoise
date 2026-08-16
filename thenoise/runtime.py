@@ -32,6 +32,7 @@ class ModelPaths:
     vae_path: str
     text_encoder_path: str
     lora_dir: str = ""
+    upscaler_dir: str = ""  # optional directory of pixel-domain upscaler models
 
 
 class NotLoadedError(RuntimeError):
@@ -57,6 +58,7 @@ class Runtime:
             device=self._settings.device,
         )
         kwargs["lora_dir"] = paths.lora_dir or None
+        kwargs["upscaler_dir"] = paths.upscaler_dir or None
 
         self._unload()  # swap: only one model resident at a time
         logger.info("Loading model '%s'", name)
