@@ -150,7 +150,7 @@ class ZImageModel(DiffusionModel):
         # actual timestep ``t = 1 - sigma`` is derived in ``denoise_step``.
         return [
             Step(t=sigmas[i], delta=sigmas[i] - sigmas[i + 1])
-            for i in range(steps)
+            for i in range(params.steps)
         ]
 
     def denoise_step(
