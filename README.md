@@ -76,10 +76,12 @@ GFX_ARCH=gfx1151 ./thenoise.sh --help
 
 ### 4. Download a model
 
-Use the venv's Python — the download scripts need `huggingface_hub`, which is
-installed inside `.venv`, not on your system Python:
+The download scripts need `huggingface_hub`, which is a `scripts` extra and is
+**not** installed by `thenoise.sh` (it only installs runtime deps). Install it
+once, then use the venv's Python (a bare system `python` will not work):
 
 ```bash
+uv pip install -e ".[scripts]"
 .venv/bin/python scripts/download_anima.py --out ./models/anima --variant turbo-v1.0
 ```
 
@@ -135,6 +137,13 @@ uv pip install -e ".[dev]"
 .venv/bin/python -m pytest tests/ -q
 ```
 
+To use the model download scripts, install the `scripts` extra instead (or in
+addition):
+
+```bash
+uv pip install -e ".[scripts]"
+```
+
 ---
 
 ## Performance
@@ -170,8 +179,9 @@ rather keep the system interpreter.
 
 Anima, Krea 2, and Z-Image-Turbo are supported. New models will be added. PRs adding model support are welcome.
 
-All download commands use `.venv/bin/python`, because `huggingface_hub` lives in
-the project venv created by [Setup](#setup) — a bare `python` will not work.
+All download commands use `.venv/bin/python` and need the `scripts` extra
+installed (`uv pip install -e ".[scripts]"`), because `huggingface_hub` lives
+in the project venv created by [Setup](#setup) — a bare `python` will not work.
 
 | Model | Download size | Notes |
 |-------|---------------|-------|

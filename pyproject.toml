@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "thenoise"
 version = "0.2.0"
 description = "Diffusion inference engine targeting ROCm"
+readme = "README.md"
 requires-python = ">=3.10"
 # NOTE: torch is intentionally NOT listed here.
 dependencies = [
@@ -18,33 +19,37 @@ dependencies = [
     "safetensors==0.4.5",
     "einops==0.7.0",
     "accelerate==1.6.0",
-    "huggingface-hub==0.34.3",
     "pillow>=11.3.0",
     "numpy",
     "tqdm",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "httpx"]
+dev = ["pytest"]
+# Download helpers in scripts/ (not needed at runtime).
+scripts = ["huggingface-hub==0.34.3"]
 
 [tool.setuptools]
 packages = [
     "thenoise",
-    "thenoise.models",
     "thenoise.dit",
     "thenoise.dit.krea2",
     "thenoise.dit.anima",
     "thenoise.dit.zimage",
-    "thenoise.vae",
+    "thenoise.models",
+    "thenoise.postprocess",
+    "thenoise.samplers",
+    "thenoise.ui",
     "thenoise.upscale",
     "thenoise.utils",
-    "thenoise.postprocess",
-    "thenoise.ui",
+    "thenoise.vae",
 ]
 
 [tool.setuptools.package-data]
 # Tokenizer configs used by the Anima text encoder (loaded via __file__).
 "thenoise.dit.anima" = ["configs/**/*"]
+# Tokenizer configs used by the Z-Image text encoder (loaded via __file__).
+"thenoise.dit.zimage" = ["configs/**/*"]
 # Committed Sesqui latent upscaler weights (bf16, ~6MB).
 "thenoise.upscale" = ["weights/**/*"]
 # Web UI served at /
