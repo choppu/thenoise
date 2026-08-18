@@ -9,7 +9,6 @@ build/
 
 # Models / weights (downloaded, not committed)
 /models/
-/upscalers/
 *.safetensors
 
 # Vendored Sesqui upscaler weights ARE committed (bf16, ~6MB).
