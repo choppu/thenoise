@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import List, Optional
 
-from PIL.PngImagePlugin import PngInfo
+from PIL.PngImagePlugin import PngInfo, iTXt
 
 
 def build_pnginfo(
@@ -82,5 +82,44 @@ def build_pnginfo(
         meta_parts.append(f"Pixel upscaler: {pixel_upscaler}")
     parts.append(", ".join(meta_parts))
     pnginfo.add_text("parameters", "\n".join(parts))
+
+    return pnginfo
+
+
+def build_upscale_pnginfo(
+    image: "PIL.Image.Image",
+    upscaler_model: str,
+    upscale_factor: float,
+) -> PngInfo:
+    """Build a PngInfo carrying over pre-existing text chunks + upscale metadata.
+
+    Copies any pre-existing text chunks already present on ``image`` (tEXt,
+    zTXt and iTXt) into a fresh :class:`PngInfo`, then adds an ``upscale_data``
+    JSON chunk recording the upscaler model and the applied upscale factor.
+
+    An existing ``upscale_data`` chunk on the source image is deliberately not
+    copied (it is replaced by the current record below) so repeated upscales do
+    not accumulate duplicate records.
+    """
+    pnginfo = PngInfo()
+
+    # Carry over pre-existing text chunks (values are str for tEXt/zTXt and
+    # iTXt objects for iTXt chunks). Skip ``upscale_data`` — replaced below.
+    for key, value in getattr(image, "info", {}).items():
+        if not isinstance(key, str):
+            continue
+        if key == "upscale_data":
+            continue
+        if isinstance(value, str) or isinstance(value, iTXt):
+            pnginfo.add_text(key, value)
+
+    # Upscale metadata (JSON).
+    pnginfo.add_text(
+        "upscale_data",
+        json.dumps({
+            "upscaler_model": upscaler_model,
+            "upscale_factor": upscale_factor,
+        }),
+    )
 
     return pnginfo

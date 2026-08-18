@@ -147,7 +147,7 @@ def create_app(runtime) -> FastAPI:
             return Response(status_code=500, content=f"upscale failed: {e}")
 
         buf = io.BytesIO()
-        image.save(buf, format="PNG")
+        image.save(buf, format="PNG", pnginfo=getattr(image, "_pnginfo", None))
         content = buf.getvalue()
 
         if req.out == "json":

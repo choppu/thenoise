@@ -31,5 +31,5 @@ def run_upscale(args) -> None:
     image = Image.open(args.input).convert("RGB")
     out = runtime.upscaler.upscale(image, args.upscale_factor, name)
 
-    out.save(args.out)
+    out.save(args.out, pnginfo=getattr(out, "_pnginfo", None))
     logger.info("saved %s (upscaler=%s, factor=%s)", args.out, name, args.upscale_factor)

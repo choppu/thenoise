@@ -12,6 +12,7 @@ from PIL import Image
 from thenoise.locks import inference_lock
 from thenoise.upscale.pixel import PixelUpscalerManager
 from thenoise.utils.image_tensor import pil_to_pixels, pixels_to_pil, resize_to_target
+from thenoise.utils.png import build_upscale_pnginfo
 
 
 class PixelUpscaleController:
@@ -50,7 +51,11 @@ class PixelUpscaleController:
                 round(image.width * upscale_factor),
                 round(image.height * upscale_factor),
             )
-        return pixels_to_pil(pixels)
+        out = pixels_to_pil(pixels)
+
+        # Carry over pre-existing text chunks from the input and add ``upscale_data``.
+        out._pnginfo = build_upscale_pnginfo(image, name, upscale_factor)
+        return out
 
 
 __all__ = ["PixelUpscaleController"]
