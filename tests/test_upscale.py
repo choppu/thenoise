@@ -118,6 +118,33 @@ def test_validate_pixel_upscaler_strips_suffix(tmp_path):
     m = _make_manager(upscaler_dir=str(tmp_path))
     assert m.validate("RealESRGAN_x4.safetensors") == "RealESRGAN_x4"
     assert m.validate("RealESRGAN_x4") == "RealESRGAN_x4"
+
+
+# --------------------------------------------------- standalone upscale controller
+def _make_upscale_controller(upscaler_dir="/tmp", scales=None):
+    """Build a PixelUpscaleController over an injected-scale manager."""
+    from thenoise.upscale_controller import PixelUpscaleController
+
+    m = PixelUpscalerManager(upscaler_dir=upscaler_dir)
+    m._pixel_upscaler_scales = dict(scales or {})
+    return PixelUpscaleController(m)
+
+
+def test_upscale_controller_rejects_bad_factor(tmp_path):
+    (tmp_path / "x4.safetensors").write_text("x")
+    c = _make_upscale_controller(upscaler_dir=str(tmp_path), scales={"x4": 4})
+    # factor > native scale -> reject
+    with pytest.raises(ValueError, match="upscale_factor"):
+        c.upscale(object(), 5, "x4")
+    # factor < 1 -> reject
+    with pytest.raises(ValueError, match="upscale_factor"):
+        c.upscale(object(), 0, "x4")
+
+
+def test_upscale_controller_requires_upscaler_dir():
+    c = _make_upscale_controller(upscaler_dir="", scales={})
+    with pytest.raises(ValueError, match="no pixel upscaler"):
+        c.upscale(object(), 2, "x4")
     with pytest.raises(ValueError, match="not found"):
         m.validate("missing")
 

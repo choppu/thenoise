@@ -60,7 +60,6 @@ from dataclasses import replace
 from typing import Optional, Tuple
 
 import torch
-import torch.nn.functional as F
 from PIL import Image
 
 from thenoise.models.base import DiffusionModel, Conditioning
@@ -69,17 +68,11 @@ from thenoise.samplers import create_sampler
 from thenoise.samplers.euler import EulerSampler
 from thenoise.upscale.pixel import PixelUpscalerManager
 from thenoise.utils.pipeline_cache import PipelineCache
+from thenoise.utils.image_tensor import center_crop, pixels_to_pil, resize_to_target
 from thenoise.postprocess.film_grain import film_grain
 from thenoise.postprocess.nyquist import nyquist_notch
 from thenoise.postprocess.rcas import rcas
 from thenoise.utils.png import build_pnginfo
-
-
-def _center_crop(image: Image.Image, width: int, height: int) -> Image.Image:
-    """Center-crop ``image`` to ``(width, height)``."""
-    left = (image.width - width) // 2
-    top = (image.height - height) // 2
-    return image.crop((left, top, left + width, top + height))
 
 
 class PipelineController:
@@ -278,7 +271,7 @@ class PipelineController:
             pixels = self._pixel_upscalers.apply(
                 pixel_upscaler, pixels, pixel_scale
             )
-            pixels = self._resize_to_target(pixels, target_width, target_height)
+            pixels = resize_to_target(pixels, target_width, target_height)
 
             # Stage 5: postprocess (cheap — not cached)
             pixels = self.postprocess(
@@ -286,10 +279,10 @@ class PipelineController:
                 film_grain_strength=request.film_grain,
                 sharpening=request.sharpening,
             )
-            image = self._to_pil(pixels)
+            image = pixels_to_pil(pixels)
 
             if (image.width, image.height) != (target_width, target_height):
-                image = _center_crop(image, target_width, target_height)
+                image = center_crop(image, target_width, target_height)
 
             # Attach PNG metadata
             pnginfo = build_pnginfo(
@@ -476,23 +469,6 @@ class PipelineController:
         )
         return model.finalize_latent(x, refine_params)
 
-    # ------------------------------------------------------------- pixel stage
-    @staticmethod
-    def _resize_to_target(
-        pixels: torch.Tensor, target_w: int, target_h: int
-    ) -> torch.Tensor:
-        """GPU bilinear resize of ``[C, H, W]`` to the target size (no-op if equal)."""
-        c, h, w = pixels.shape
-        if (w, h) == (target_w, target_h):
-            return pixels
-        with torch.no_grad():
-            return F.interpolate(
-                pixels.unsqueeze(0),
-                size=(target_h, target_w),
-                mode="bilinear",
-                align_corners=False,
-            )[0]
-
     # ---------------------------------------------------------- postprocess
     def postprocess(
         self,
@@ -507,13 +483,6 @@ class PipelineController:
         if film_grain_strength > 0.0:
             pixels = film_grain(pixels, strength=film_grain_strength / 10.0)
         return pixels
-
-    @staticmethod
-    def _to_pil(pixels: torch.Tensor) -> Image.Image:
-        x = torch.clamp(pixels, -1.0, 1.0)
-        x = ((x + 1.0) * 127.5).to(torch.uint8).cpu().numpy()
-        x = x.transpose(1, 2, 0)  # C, H, W -> H, W, C
-        return Image.fromarray(x)
 
 
 __all__ = ["PipelineController"]
