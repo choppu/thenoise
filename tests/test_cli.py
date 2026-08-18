@@ -255,12 +255,12 @@ def test_cli_generate_parses_lora():
 
 def test_out_defaults_to_png_when_no_extension():
     """A bare --out with no extension gets .png appended before save."""
-    from thenoise.generate import _ensure_extension
-    assert _ensure_extension("out") == "out.png"
-    assert _ensure_extension("dir/out") == "dir/out.png"
-    assert _ensure_extension("out.png") == "out.png"
-    assert _ensure_extension("out.jpg") == "out.jpg"
-    assert _ensure_extension("out.tar.gz") == "out.tar.gz"
+    from thenoise.utils.paths import ensure_png_extension
+    assert ensure_png_extension("out") == "out.png"
+    assert ensure_png_extension("dir/out") == "dir/out.png"
+    assert ensure_png_extension("out.png") == "out.png"
+    assert ensure_png_extension("out.jpg") == "out.jpg"
+    assert ensure_png_extension("out.tar.gz") == "out.tar.gz"
 
 
 def test_cli_rejects_unknown_flags():

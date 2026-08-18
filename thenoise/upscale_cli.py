@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import os
 
+from .utils.paths import ensure_png_extension
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -19,8 +21,9 @@ def run_upscale(args) -> None:
 
     # ``--pixel-upscaler`` is a one-shot convenience: a full path to the model.
     # Split it into ``upscaler_dir`` (server config) + name (sans suffix), the
-    # same form the ``serve``/API path uses.
-    upscaler_dir = os.path.dirname(args.pixel_upscaler)
+    # same form the ``serve``/API path uses. ``or "."`` keeps a bare filename
+    # (no directory) usable: it then resolves against the current directory.
+    upscaler_dir = os.path.dirname(args.pixel_upscaler) or "."
     name = os.path.basename(args.pixel_upscaler)
     if name.endswith(".safetensors"):
         name = name[: -len(".safetensors")]
@@ -31,5 +34,6 @@ def run_upscale(args) -> None:
     image = Image.open(args.input).convert("RGB")
     out = runtime.upscaler.upscale(image, args.upscale_factor, name)
 
-    out.save(args.out, pnginfo=getattr(out, "_pnginfo", None))
-    logger.info("saved %s (upscaler=%s, factor=%s)", args.out, name, args.upscale_factor)
+    out_path = ensure_png_extension(args.out)
+    out.save(out_path, pnginfo=getattr(out, "_pnginfo", None))
+    logger.info("saved %s (upscaler=%s, factor=%s)", out_path, name, args.upscale_factor)

@@ -41,7 +41,7 @@ Upscaling has two modes, driven by ``upscale_factor`` (f in (0.0, 8.0]) and
     step (scale auto-detected from the model, 2/4) is added on the decoded
     image and the result is downscaled to f.
   * ``no-refiner``: only the pixel-domain upscaler step runs on the decoded
-    image (no latent 2x multiplier), so f is capped at the detected scale.
+    image (no latent 2x multiplier), so f is limited to the detected scale.
 
 Pixel-domain upscalers are selected by name from ``upscaler_dir`` (CLI
 ``--upscaler-dir``); the request's ``pixel_upscaler`` picks which model in that
@@ -337,7 +337,7 @@ class PipelineController:
         """Validate and return the effective (factor, type).
 
         ``upscale_factor`` must be in (0.0, 8.0]. ``no-refiner`` mode has no
-        latent 2x multiplier so it is capped at the pixel-upscaler scale. A pixel
+        latent 2x multiplier so it is limited to the pixel-upscaler scale. A pixel
         upscaler (selected by ``pixel_upscaler`` from ``upscaler_dir``) is
         required for ``no-refiner`` and for ``refined`` factors above the latent
         2x.

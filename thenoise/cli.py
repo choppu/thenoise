@@ -108,8 +108,8 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--input", required=True, metavar="PATH",
                     help="input image to upscale")
     up.add_argument("--upscale-factor", type=float, default=2.0,
-                    help="upscale factor (default: 2.0); capped at the model's "
-                         "detected scale")
+                    help="upscale factor (default: 2.0); must be in [1, the "
+                         "model's detected scale]")
     up.add_argument("--out", default="out_upscaled.png",
                     help="output image path (default: out_upscaled.png)")
     up.add_argument("--device", default="cuda",
