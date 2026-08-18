@@ -272,3 +272,39 @@ def test_cli_rejects_unknown_flags():
             "--vae", "v.safetensors",
             "--text-encoder", "te.safetensors",
         ])
+
+
+def test_cli_upscale_parses():
+    args = build_parser().parse_args([
+        "upscale",
+        "--pixel-upscaler", "/models/RealESRGAN_x4.safetensors",
+        "--input", "in.png",
+        "--upscale-factor", "4",
+        "--out", "out.png",
+        "--device", "hip",
+    ])
+    assert args.command == "upscale"
+    assert args.pixel_upscaler == "/models/RealESRGAN_x4.safetensors"
+    assert args.input == "in.png"
+    assert args.upscale_factor == 4
+    assert args.out == "out.png"
+    assert args.device == "hip"
+
+
+def test_cli_upscale_defaults_and_is_model_free():
+    args = build_parser().parse_args([
+        "upscale",
+        "--pixel-upscaler", "/models/x.safetensors",
+        "--input", "in.png",
+    ])
+    assert args.upscale_factor == 2
+    assert args.out == "out_upscaled.png"
+    assert args.device == "cuda"
+    # model-free: no checkpoint or prompt flags on the upscale subcommand
+    assert not hasattr(args, "dit")
+    assert not hasattr(args, "prompt")
+
+
+def test_cli_upscale_requires_pixel_upscaler_and_input():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["upscale"])

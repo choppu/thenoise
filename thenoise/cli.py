@@ -1,12 +1,14 @@
 """Command-line interface for thenoise.
 
-Two subcommands share the same checkpoint flags:
+Three subcommands:
   * ``serve``    run the FastAPI HTTP server with a single loaded model
   * ``generate`` run one generation and save the PNG
+  * ``upscale``  pixel-upscale an image (no diffusion model needed)
 
-Model checkpoints are supplied here (``--dit`` / ``--vae`` / ``--text-encoder``),
-and the model type is detected automatically from the ``--dit`` checkpoint.
-All options are passed on the command line (there is no config file).
+Model checkpoints are supplied to ``serve``/``generate`` (``--dit`` / ``--vae`` /
+``--text-encoder``), and the model type is detected automatically from the ``--dit``
+checkpoint. ``upscale`` needs no diffusion model. All options are passed on the
+command line (there is no config file).
 """
 from __future__ import annotations
 
@@ -97,5 +99,20 @@ def build_parser() -> argparse.ArgumentParser:
                      help="RCAS sharpening strength 0.0–1.0 (contrast-adaptive, default: 0.0 / off)")
     gen.add_argument("--device", default="cuda",
                      help="inference device; ROCm aliases cuda -> hip (default: cuda)")
+
+    # upscale
+    up = sub.add_parser("upscale", help="pixel-upscale an image (no model needed)")
+    up.add_argument("--pixel-upscaler", required=True, metavar="PATH",
+                    help="full path to the pixel upscaler model (.safetensors), "
+                         "e.g. a Real-ESRGAN model")
+    up.add_argument("--input", required=True, metavar="PATH",
+                    help="input image to upscale")
+    up.add_argument("--upscale-factor", type=float, default=2.0,
+                    help="upscale factor (default: 2.0); capped at the model's "
+                         "detected scale")
+    up.add_argument("--out", default="out_upscaled.png",
+                    help="output image path (default: out_upscaled.png)")
+    up.add_argument("--device", default="cuda",
+                    help="inference device; ROCm aliases cuda -> hip (default: cuda)")
 
     return parser

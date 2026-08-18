@@ -1,7 +1,10 @@
 """API tests using a fake runtime (no torch, no weights, no TestClient)."""
 from __future__ import annotations
 
-from thenoise.api import create_app, Text2ImageRequest
+import base64
+import io
+
+from thenoise.api import create_app, Text2ImageRequest, UpscaleRequest
 from thenoise.runtime import Settings, Runtime
 
 
@@ -65,3 +68,60 @@ def test_text2image_passes_pixel_upscaler(tmp_path):
 def test_request_field_defaults_none():
     req = Text2ImageRequest(prompt="x")
     assert req.pixel_upscaler is None
+
+
+def _png_b64():
+    """A tiny valid base64-encoded PNG."""
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (2, 2)).save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def test_upscale_returns_400_without_upscaler_dir():
+    """No upscaler_dir configured -> controller raises ValueError -> 400."""
+    app = create_app(_empty_runtime())
+    req = UpscaleRequest(image_b64=_png_b64(), pixel_upscaler="x4")
+    res = _endpoint(app, "/upscale")(req)
+    assert res.status_code == 400
+
+
+def test_upscale_returns_400_for_unknown_upscaler(tmp_path):
+    """Unknown upscaler name -> validate raises -> 400."""
+    app = create_app(_fake_runtime(tmp_path))
+    req = UpscaleRequest(image_b64=_png_b64(), pixel_upscaler="nonexistent")
+    res = _endpoint(app, "/upscale")(req)
+    assert res.status_code == 400
+
+
+def test_upscale_returns_b64_json(monkeypatch):
+    """A successful upscale returns a b64_json payload (no torch needed)."""
+    from PIL import Image
+
+    runtime = _fake_runtime()
+
+    def fake_upscale(image, upscale_factor, pixel_upscaler):
+        return Image.new("RGB", (4, 4))
+
+    monkeypatch.setattr(runtime.upscaler, "upscale", fake_upscale)
+    app = create_app(runtime)
+    req = UpscaleRequest(image_b64=_png_b64(), pixel_upscaler="x4", out="json")
+    res = _endpoint(app, "/upscale")(req)
+    assert isinstance(res, dict)
+    assert "b64_json" in res
+
+
+def test_upscale_defaults_to_png(monkeypatch):
+    """Default out='png' returns a raw image/png response."""
+    from PIL import Image
+
+    runtime = _fake_runtime()
+    monkeypatch.setattr(
+        runtime.upscaler, "upscale", lambda image, f, name: Image.new("RGB", (4, 4))
+    )
+    app = create_app(runtime)
+    req = UpscaleRequest(image_b64=_png_b64(), pixel_upscaler="x4")
+    res = _endpoint(app, "/upscale")(req)
+    assert res.status_code == 200
+    assert res.media_type == "image/png"
+    assert res.body

@@ -52,15 +52,17 @@ class NotLoadedError(RuntimeError):
 class Runtime:
     def __init__(self, settings):
         from .upscale.pixel import PixelUpscalerManager
+        from .upscale_controller import PixelUpscaleController
 
         self._settings = settings
         self._model: Any = None
         self._model_name: Optional[str] = None
-        # Shared pixel-domain upscaler pool (model-free, server-level). Reused by
-        # the pipeline controller and a future standalone /upscale endpoint.
+        # Shared pixel-domain upscaler pool (model-free, server-level). Used by
+        # the pipeline controller and the standalone /upscale endpoint.
         self._pixel_upscalers = PixelUpscalerManager(
             upscaler_dir=settings.upscaler_dir, device=settings.device
         )
+        self._upscaler = PixelUpscaleController(self._pixel_upscalers)
         self._pipeline = None
 
     def load(self, paths: ModelPaths) -> None:
@@ -114,6 +116,11 @@ class Runtime:
     def pixel_upscalers(self):
         """The shared pixel-domain upscaler pool (available without a model)."""
         return self._pixel_upscalers
+
+    @property
+    def upscaler(self):
+        """Standalone pixel upscale controller (model-free, always available)."""
+        return self._upscaler
 
     @property
     def model_name(self) -> str:
