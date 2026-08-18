@@ -236,15 +236,39 @@ and the Qwen3-4B text encoder (`qwen_3_4b.safetensors`, ~8 GB).
 
 ## Operation Modes
 
-TheNoise can be used in three ways:
+TheNoise can be used in four ways:
 
 1. **CLI** — generate a single image from the command line
-2. **HTTP server** — serve a model over HTTP with a JSON API
-3. **Web UI** — a very basic browser interface served at `http://localhost:8000/` when running the server
+2. **CLI `upscale`** — pixel-upscale an existing image (no diffusion model needed)
+3. **HTTP server** — serve a model over HTTP with a JSON API
+4. **Web UI** — a very basic browser interface served at `http://localhost:8000/` when running the server
 
 The model type is **auto-detected** from the DiT checkpoint — no need to specify which model you are using.
 
 ---
+
+## Upscaling
+
+TheNoise supports up to 8× upscaling through two complementary mechanisms. Both are optional and can be combined.
+
+### Latent upscale + refiner (`refined`)
+
+Every model ships a built-in **latent (SesquiLSR) upscaler** that runs in latent space before the VAE decode, upscaling the latent 2× and then running a short, low-strength refine denoise at the upscaled size. This is the default `upscale_type` and needs **no extra model files** — a 2× upscale works out of the box on any supported model.
+
+### Pixel-domain upscaler (`no-refiner`, and beyond 2×)
+
+Pixel upscaling operates purely in pixel space (after decode) and uses a dedicated upscaler model — today Real-ESRGAN. It is **not** a model concern: the upscaler directory is server configuration (`--upscaler-dir`), and the named model is selected per-request via `pixel_upscaler`. Only the last-used upscaler is kept loaded (switched on change).
+
+A pixel upscaler is **required** for `no-refiner` mode (pixel upscaler only, no latent 2×), and for `refined` factors above the latent 2×. Without one, only `refined` factors up to 2× are available.
+
+The max factor follows the detected upscaler scale. For a 4× Real-ESRGAN model: `no-refiner` is limited to 4×, and `refined` to 2× (latent) × 4× (pixel) = 8×.
+
+```bash
+# download the optional Real-ESRGAN x4 pixel upscaler (needs the scripts extra)
+.venv/bin/python scripts/download_esrgan.py --out ./models/esrgan
+```
+
+The downloaded `RealESRGAN_x4plus.safetensors` goes into an `--upscaler-dir` (serve) or is passed by full path via `--pixel-upscaler` (generate/upscale).
 
 ## CLI
 
@@ -291,6 +315,15 @@ Then open `http://localhost:8000/` for the web UI.
   --out /tmp/fox.png
 ```
 
+### Upscale a single image
+
+```bash
+./thenoise.sh upscale \
+  --pixel-upscaler ./models/esrgan/RealESRGAN_x4plus.safetensors \
+  --input /tmp/fox.png --upscale-factor 4 \
+  --out /tmp/fox_4x.png
+```
+
 ### Load LoRAs
 
 Place `.safetensors` LoRA files in a directory and point `--lora-dir` at it (both `serve` and `generate`). Then apply LoRAs per-request:
@@ -318,7 +351,8 @@ LoRA format is `filename:weight` — the `.safetensors` extension is appended au
 | `GET` | `/` | Web UI |
 | `GET` | `/health` | Server status and loaded model |
 | `GET` | `/lora` | List available LoRA names |
-| `GET` | `/upscalers` | List available pixel upscaler names |
+| `GET` | `/upscalers` | List available pixel upscaler names (works even with no model loaded) |
+| `POST` | `/upscale` | Pixel-upscale an input image (works even with no model loaded) |
 | `POST` | `/text2image` | Generate an image |
 
 ### `/text2image` request body
@@ -359,6 +393,26 @@ curl -s localhost:8000/text2image \
 
 If no model is loaded, `/text2image` returns HTTP 503.
 
+### `/upscale` request body
+
+Pixel-upscales an existing image by `upscale_factor`× with a named pixel upscaler. Unlike `/text2image`, this needs no diffusion model loaded — only an upscaler configured via `--upscaler-dir`.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `image_b64` | `string` | *(required)* | Base64-encoded input image (PNG/JPEG) |
+| `upscale_factor` | `float` | `2.0` | Desired final factor (≥ 1, capped at the upscaler's native scale) |
+| `pixel_upscaler` | `string` | *(required)* | Pixel upscaler name (no `.safetensors` suffix) from `--upscaler-dir` |
+| `out` | `string` | `png` | `png` (returns an image) or `json` (returns `b64_json`) |
+
+### `/upscale` example
+
+```bash
+curl -s localhost:8000/upscale \
+  -H 'content-type: application/json' \
+  -d '{"image_b64":"<base64 png>","pixel_upscaler":"RealESRGAN_x4plus","upscale_factor":4}' \
+  --output /tmp/fox_4x.png
+```
+
 ---
 
 ## CLI Parameters Reference
@@ -396,8 +450,21 @@ If no model is loaded, `/text2image` returns HTTP 503.
 | `--lora` | no | — | LoRA to apply (repeatable, format: `file:weight`) |
 | `--pixel-upscaler` | no | — | Full path to the pixel upscaler model (one-shot; e.g. a Real-ESRGAN `.safetensors`) |
 | `--upscale-type` | no | `refined` | `refined` or `no-refiner` |
-| `--upscale` | no | off | 2× latent upscale with refine denoise |
+| `--upscale` | no | off | 2× latent upscale with refine denoise (legacy alias for `--upscale-type refined --upscale-factor 2`) |
+| `--upscale-factor` | no | `1.0` | Upscale factor (> 0.0; max depends on the pixel upscaler scale, see [Upscaling](#upscaling)) |
 | `--sampler` | no | `er_sde` | Solver: `euler` or `er_sde` |
 | `--qwen-vae-enhance` | no | off | Nyquist notch post-filter |
 | `--film-grain` | no | `0.0` | Film grain strength (0.0–10.0) |
 | `--sharpening` | no | `0.0` | RCAS sharpening strength (0.0–1.0) |
+
+### `upscale` only
+
+Pixel-upscales an existing image. Model-free — no `--dit`/`--vae`/`--text-encoder` needed.
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--pixel-upscaler` | yes | — | Full path to the pixel upscaler model (e.g. a Real-ESRGAN `.safetensors`) |
+| `--input` | yes | — | Input image to upscale |
+| `--upscale-factor` | no | `2.0` | Upscale factor; capped at the model's detected scale |
+| `--out` | no | `out_upscaled.png` | Output image path |
+| `--device` | no | `cuda` | Inference device (ROCm aliases `cuda` → `hip`) |
