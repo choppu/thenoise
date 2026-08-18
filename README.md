@@ -404,7 +404,11 @@ Pixel-upscales an existing image by `upscale_factor`× with a named pixel upscal
 | `pixel_upscaler` | `string` | *(required)* | Pixel upscaler name (no `.safetensors` suffix) from `--upscaler-dir` |
 | `out` | `string` | `png` | `png` (returns an image) or `json` (returns `b64_json`) |
 
-### `/upscale` example
+### Response
+
+Returns a PNG image directly (`Content-Type: image/png`).
+
+### Example
 
 ```bash
 curl -s localhost:8000/upscale \
@@ -412,8 +416,6 @@ curl -s localhost:8000/upscale \
   -d '{"image_b64":"<base64 png>","pixel_upscaler":"RealESRGAN_x4plus","upscale_factor":4}' \
   --output /tmp/fox_4x.png
 ```
-
----
 
 ## CLI Parameters Reference
 
@@ -467,4 +469,3 @@ Pixel-upscales an existing image. Model-free — no `--dit`/`--vae`/`--text-enco
 | `--input` | yes | — | Input image to upscale |
 | `--upscale-factor` | no | `2.0` | Upscale factor; capped at the model's detected scale |
 | `--out` | no | `out_upscaled.png` | Output image path |
-| `--device` | no | `cuda` | Inference device (ROCm aliases `cuda` → `hip`) |
