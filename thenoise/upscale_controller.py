@@ -7,10 +7,9 @@ The manager stays unchanged; this controller is the caller that serializes.
 """
 from __future__ import annotations
 
-import threading
-
 from PIL import Image
 
+from thenoise.locks import inference_lock
 from thenoise.upscale.pixel import PixelUpscalerManager
 from thenoise.utils.image_tensor import pil_to_pixels, pixels_to_pil, resize_to_target
 
@@ -20,7 +19,7 @@ class PixelUpscaleController:
 
     def __init__(self, pixel_upscalers: PixelUpscalerManager):
         self._pixel_upscalers = pixel_upscalers
-        self._lock = threading.Lock()
+        self._lock = inference_lock
 
     def upscale(
         self, image: Image.Image, upscale_factor: float, pixel_upscaler: str

@@ -55,13 +55,13 @@ pixel_scale``, ``no-refiner`` up to ``pixel_scale``.
 from __future__ import annotations
 
 import random
-import threading
 from dataclasses import replace
 from typing import Optional, Tuple
 
 import torch
 from PIL import Image
 
+from thenoise.locks import inference_lock
 from thenoise.models.base import DiffusionModel, Conditioning
 from thenoise.models.config import GenerateRequest, SamplingParams
 from thenoise.samplers import create_sampler
@@ -85,7 +85,7 @@ class PipelineController:
     ):
         self.model = model
         self._pixel_upscalers = pixel_upscalers
-        self._lock = threading.Lock()
+        self._lock = inference_lock
         self._cache = PipelineCache()
 
     # ------------------------------------------------------------ listing

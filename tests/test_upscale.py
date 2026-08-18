@@ -142,11 +142,15 @@ def test_upscale_controller_rejects_bad_factor(tmp_path):
 
 
 def test_upscale_controller_requires_upscaler_dir():
+    # no upscaler dir configured -> "no pixel upscaler"
     c = _make_upscale_controller(upscaler_dir="", scales={})
     with pytest.raises(ValueError, match="no pixel upscaler"):
         c.upscale(object(), 2, "x4")
+
+    # upscaler dir configured but named model missing -> "not found"
+    c = _make_upscale_controller(upscaler_dir="/tmp", scales={})
     with pytest.raises(ValueError, match="not found"):
-        m.validate("missing")
+        c.upscale(object(), 2, "missing")
 
 
 def test_list_pixel_upscalers(tmp_path):
