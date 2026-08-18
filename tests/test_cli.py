@@ -253,6 +253,16 @@ def test_cli_generate_parses_lora():
     assert args.lora == ["style.safetensors:0.8", "pose.safetensors:1.0"]
 
 
+def test_out_defaults_to_png_when_no_extension():
+    """A bare --out with no extension gets .png appended before save."""
+    from thenoise.generate import _ensure_extension
+    assert _ensure_extension("out") == "out.png"
+    assert _ensure_extension("dir/out") == "dir/out.png"
+    assert _ensure_extension("out.png") == "out.png"
+    assert _ensure_extension("out.jpg") == "out.jpg"
+    assert _ensure_extension("out.tar.gz") == "out.tar.gz"
+
+
 def test_cli_rejects_unknown_flags():
     # --model and --dtype are gone: everything is auto-detected / fixed bf16.
     with pytest.raises(SystemExit):
