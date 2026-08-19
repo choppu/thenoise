@@ -185,9 +185,6 @@ class PipelineController:
             else request.guidance_scale
         )
 
-        # Resolve upscale parameters: ``upscale`` is a legacy alias for a 2x
-        # refined upscale; an explicit factor/type overrides it. A requested
-        # pixel upscaler is validated (exists in upscaler_dir) before planning.
         pixel_upscaler = request.pixel_upscaler
         if pixel_upscaler:
             pixel_upscaler = self._pixel_upscalers.validate(pixel_upscaler)
@@ -426,7 +423,8 @@ class PipelineController:
             # Adaptor math in fp32; the model runs in bf16.
             raw = adaptor.to_vae_latent(z).to(model.dtype)
             h, w = z.shape[-2:]
-            raw_up = upscaler(raw, (scale * h, scale * w))
+            target = adaptor.vae_target_size((scale * h, scale * w))
+            raw_up = upscaler(raw, target)
             z_up = adaptor.from_vae_latent(raw_up.float()).to(model.dtype)
 
         # One short low-strength refine denoise at the upscaled size. The refine

@@ -9,10 +9,16 @@ from typing import List, Type
 
 from .base import DiffusionModel
 from .anima import AnimaModel
+from .flux_klein import FluxKleinModel
 from .krea2 import Krea2Model
 from .zimage import ZImageModel
 
-MODEL_CATALOG: List[Type[DiffusionModel]] = [Krea2Model, AnimaModel, ZImageModel]
+MODEL_CATALOG: List[Type[DiffusionModel]] = [
+    Krea2Model,
+    AnimaModel,
+    ZImageModel,
+    FluxKleinModel,
+]
 
 
 def resolve(dit_path: str) -> Type[DiffusionModel]:
