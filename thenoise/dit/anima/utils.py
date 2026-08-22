@@ -7,7 +7,8 @@ from safetensors.torch import load_file
 from accelerate import init_empty_weights
 
 from thenoise.dit.anima import models as anima_models
-from thenoise.utils.safetensors import WRAP_PREFIXES, load_dit_safetensors
+from thenoise.utils.loader import load_dit
+from thenoise.utils.safetensors import WRAP_PREFIXES
 from thenoise.utils.setup_logging import setup_logging
 
 setup_logging()
@@ -99,44 +100,17 @@ def load_anima_model(
     }
     with init_empty_weights():
         model = anima_models.Anima(**dit_config)
-        if dit_weight_dtype is not None:
-            model.to(dit_weight_dtype)
 
     logger.info(f"Loading DiT model from {dit_path}, device={loading_device}")
 
-    sd = load_dit_safetensors(
+    load_dit(
+        model,
         dit_path,
         device=loading_device,
-        disable_mmap=True,
         dtype=dit_weight_dtype,
+        expected_missing=("seq", "dim_spatial_range", "dim_temporal_range", "inv_freq"),
     )
-
-    missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
-    if missing:
-        # Filter out expected missing buffers (initialized in __init__, not saved in checkpoint)
-        unexpected_missing = [
-            k
-            for k in missing
-            if not any(buf_name in k for buf_name in ("seq", "dim_spatial_range", "dim_temporal_range", "inv_freq"))
-        ]
-        if unexpected_missing:
-            # Raise error to avoid silent failures
-            raise RuntimeError(
-                f"Missing keys in checkpoint: {unexpected_missing[:10]}{'...' if len(unexpected_missing) > 10 else ''}"
-            )
-        missing = {}  # all missing keys were expected
-    if unexpected:
-        # Raise error to avoid silent failures
-        raise RuntimeError(f"Unexpected keys in checkpoint: {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
-
-    # Move the whole model (including buffers not present in the checkpoint, e.g. the
-    # RoPE position-embedding buffers seq/dim_spatial_range/dim_temporal_range) onto the
-    # loading device. Under init_empty_weights() those buffers are created on meta, and
-    # load_state_dict(assign=True) only replaces keys present in the checkpoint, so they
-    # would otherwise stay off-device and break rotary attention on the GPU.
-    if loading_device.type != "cpu":
-        model.to(loading_device)
-    logger.info(f"Loaded DiT model from {dit_path}, unexpected missing keys: {len(missing)}, unexpected keys: {len(unexpected)}")
+    logger.info("Loaded DiT model from %s", dit_path)
 
     return model
 

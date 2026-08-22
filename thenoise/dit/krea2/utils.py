@@ -12,7 +12,7 @@ from thenoise.dit.krea2.encoder import (
     load_qwen3_vl_conditioner,
 )
 from thenoise.dit.krea2.mmdit import SingleMMDiTConfig, SingleStreamDiT
-from thenoise.utils.safetensors import load_dit_safetensors
+from thenoise.utils.loader import load_dit
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +42,7 @@ def load_krea2_dit(
     config: SingleMMDiTConfig = single_mmdit_large_wide,
     loading_device: Optional[Union[str, torch.device]] = None,
 ) -> SingleStreamDiT:
-    """Build the K2 single-stream MMDiT on meta and load weights (assign=True).
-
-    bf16 only: fp8 is dropped. ``lora_weights`` (a list of loaded LoRA state dicts, with
-    optional ``lora_multipliers``) are merged into the base weights at load time.
-    """
+    """Build the K2 single-stream MMDiT on meta and load weights."""
     device = torch.device(device)
     loading_device = device if loading_device is None else torch.device(loading_device)
 
@@ -54,19 +50,13 @@ def load_krea2_dit(
     with torch.device("meta"):
         dit = SingleStreamDiT(config)
 
-    sd = load_dit_safetensors(
+    return load_dit(
+        dit,
         dit_path,
         device=loading_device,
-        disable_mmap=True,
         dtype=dtype,
-        # Some older Krea 2 checkpoints carry leftover unused ``last.down.*`` /
-        # ``last.up.*`` keys — drop them so the strict load still passes.
         drop_keys=("last.down", "last.up"),
     )
-
-    dit.load_state_dict(sd, strict=True, assign=True)
-
-    return dit
 
 
 def load_krea2_text_encoder(
