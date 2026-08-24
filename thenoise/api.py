@@ -31,6 +31,7 @@ class Text2ImageRequest(BaseModel):
     negative_prompt: str = ""
     width: Optional[int] = None
     height: Optional[int] = None
+
     steps: Optional[int] = None
     guidance_scale: Optional[float] = None
     seed: Optional[int] = None
