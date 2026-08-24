@@ -85,6 +85,16 @@ def create_app(runtime) -> FastAPI:
         with open(os.path.join(_UI_DIR, "index.html"), encoding="utf-8") as f:
             return f.read()
 
+    @app.get("/style.css", response_class=Response)
+    def style():
+        with open(os.path.join(_UI_DIR, "style.css"), encoding="utf-8") as f:
+            return Response(content=f.read(), media_type="text/css")
+
+    @app.get("/app.js", response_class=Response)
+    def script():
+        with open(os.path.join(_UI_DIR, "app.js"), encoding="utf-8") as f:
+            return Response(content=f.read(), media_type="text/javascript")
+
     @app.get("/health")
     def health():
         return {"status": "ok", "models": runtime.available()}
@@ -99,12 +109,21 @@ def create_app(runtime) -> FastAPI:
 
     @app.get("/upscalers")
     def upscalers():
-        """List available pixel upscaler names (short, no .safetensors suffix).
+        """List available pixel upscaler names + their detected native scales.
 
         Pixel upscalers are a pixel-space / server concern and need no diffusion
-        model, so this works even when no model is loaded.
+        model, so this works even when no model is loaded. ``scales`` maps each
+        name to its detected native scale (2 or 4); unknown/undetectable entries
+        are 0.
         """
-        return {"upscalers": runtime.pixel_upscalers.list()}
+        names = runtime.pixel_upscalers.list()
+        scales = {}
+        for name in names:
+            try:
+                scales[name] = runtime.pixel_upscalers.scale(name)
+            except Exception:
+                scales[name] = 0
+        return {"upscalers": names, "scales": scales}
 
     @app.post("/text2image")
     def text2image(req: Text2ImageRequest):

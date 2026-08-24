@@ -47,6 +47,19 @@ def test_upscalers_lists_names(tmp_path):
     app = create_app(_fake_runtime(tmp_path))
     res = _endpoint(app, "/upscalers")()
     assert res["upscalers"] == ["RealESRGAN_x4", "sub/x2"]
+    assert set(res["scales"]) == {"RealESRGAN_x4", "sub/x2"}
+
+
+def test_upscalers_scales_pass_through(tmp_path):
+    # Pre-seeded scales are served verbatim (no file access needed).
+    runtime = _fake_runtime(tmp_path)
+    runtime._pixel_upscalers._pixel_upscaler_scales = {
+        "RealESRGAN_x4": 4,
+        "sub/x2": 2,
+    }
+    app = create_app(runtime)
+    res = _endpoint(app, "/upscalers")()
+    assert res["scales"] == {"RealESRGAN_x4": 4, "sub/x2": 2}
 
 
 def test_upscalers_available_without_model():
@@ -124,4 +137,32 @@ def test_upscale_defaults_to_png(monkeypatch):
     res = _endpoint(app, "/upscale")(req)
     assert res.status_code == 200
     assert res.media_type == "image/png"
+    assert res.body
+
+
+def test_ui_references_external_css_and_js():
+    """index.html links style.css and app.js instead of inline style/script."""
+    from thenoise.api import _UI_DIR
+    import os
+
+    html = open(os.path.join(_UI_DIR, "index.html"), encoding="utf-8").read()
+    assert '<link rel="stylesheet" href="style.css">' in html
+    assert '<script src="app.js"></script>' in html
+    assert "<style>" not in html
+    assert "<script>" not in html
+
+
+def test_style_css_served():
+    app = create_app(_empty_runtime())
+    res = _endpoint(app, "/style.css")()
+    assert res.status_code == 200
+    assert res.media_type == "text/css"
+    assert res.body
+
+
+def test_app_js_served():
+    app = create_app(_empty_runtime())
+    res = _endpoint(app, "/app.js")()
+    assert res.status_code == 200
+    assert res.media_type == "text/javascript"
     assert res.body
