@@ -238,3 +238,29 @@ def test_switch_pixel_upscaler_keeps_last_used(tmp_path, monkeypatch):
     assert m._pixel_upscaler is fake_model
     assert len(calls) == 2
     assert m._pixel_upscaler_scales == {"x2": 2, "x4": 4}
+
+
+def test_forward_tiled_pads_odd_dimensions():
+    """Odd-dimension inputs (non-divisible edge tiles) must not crash.
+
+    Scale-2 ESRGAN pixel-unshuffles the input by 2, so any non-divisible tile
+    size crashes the reshape. ``forward_tiled`` must pad to a multiple of
+    ``scale`` and crop back, for both scale 2 and 4.
+    """
+    import torch
+    import torch.nn.functional as F
+    from thenoise.upscale.esrgan import RRDBNet
+
+    for scale in (2, 4):
+        model = RRDBNet(scale=scale, num_feat=8, num_block=1, num_grow_ch=4)
+        model.eval()
+        h, w = 17, 15  # odd, and multi-tile under a small tile size
+        x = torch.randn(1, 3, h, w)
+        out = model.forward_tiled(x, tile_size=8, tile_pad=2)
+        assert out.shape == (1, 3, h * scale, w * scale)
+
+        # Cross-check: tiling an explicitly pre-padded image and cropping must
+        # match the internal pad/crop, i.e. only the original region is kept.
+        padded = F.pad(x, (0, (-w) % scale, 0, (-h) % scale))
+        ref = model.forward_tiled(padded, tile_size=8, tile_pad=2)
+        assert torch.allclose(out, ref[:, :, : h * scale, : w * scale], atol=1e-5)

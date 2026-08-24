@@ -170,7 +170,15 @@ class RRDBNet(nn.Module):
         scale = self.scale
         b, c, h, w = img.shape
         out_h, out_w = h * scale, w * scale
-        out = torch.zeros((b, c, out_h, out_w), device=img.device, dtype=img.dtype)
+
+        # Pixel-unshuffle requires each tile's spatial dims to be  divisible by `scale`
+        pad_h = (-h) % scale
+        pad_w = (-w) % scale
+        if pad_h or pad_w:
+            img = F.pad(img, (0, pad_w, 0, pad_h))
+            h, w = h + pad_h, w + pad_w
+
+        out = torch.zeros((b, c, h * scale, w * scale), device=img.device, dtype=img.dtype)
 
         for y in range(0, h, tile_size):
             for x in range(0, w, tile_size):
@@ -189,7 +197,7 @@ class RRDBNet(nn.Module):
                 out[:, :, y * scale : y * scale + (oy1 - oy0), x * scale : x * scale + (ox1 - ox0)] = (
                     ot[:, :, oy0:oy1, ox0:ox1]
                 )
-        return out
+        return out[:, :, :out_h, :out_w]
 
 
 def detect_esrgan_scheme(path: str) -> str:
