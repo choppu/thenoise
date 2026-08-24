@@ -136,9 +136,57 @@ def test_upscale_controller_rejects_bad_factor(tmp_path):
     # factor > native scale -> reject
     with pytest.raises(ValueError, match="upscale_factor"):
         c.upscale(object(), 5, "x4")
-    # factor < 1 -> reject
+    # factor 0.5 (a positive sub-unit factor, not the 0 sentinel) -> reject
     with pytest.raises(ValueError, match="upscale_factor"):
-        c.upscale(object(), 0, "x4")
+        c.upscale(object(), 0.5, "x4")
+
+
+def test_upscale_controller_zero_factor_uses_detected_scale(tmp_path, monkeypatch):
+    (tmp_path / "x4.safetensors").write_text("x")
+    c = _make_upscale_controller(upscaler_dir=str(tmp_path), scales={"x4": 4})
+
+    # Stub the pixel conversion so we can observe whether validation passed
+    # (the controller would otherwise try to load the model onto a device).
+    def _boom(_img):
+        raise RuntimeError("reached-pixels")
+
+    monkeypatch.setattr("thenoise.upscale_controller.pil_to_pixels", _boom)
+
+    # 0.0 sentinel resolves to the detected scale (4) and passes validation,
+    # so the flow proceeds past validation to the pixel conversion step.
+    with pytest.raises(RuntimeError, match="reached-pixels"):
+        c.upscale(object(), 0.0, "x4")
+    # a positive sub-unit factor is still rejected before reaching pixels.
+    with pytest.raises(ValueError, match="upscale_factor"):
+        c.upscale(object(), 0.5, "x4")
+    with pytest.raises(ValueError, match="upscale_factor"):
+        c.upscale(object(), 5.0, "x4")
+
+
+def test_upscale_controller_attaches_resolved_factor(tmp_path, monkeypatch):
+    from PIL import Image
+
+    (tmp_path / "x4.safetensors").write_text("x")
+    c = _make_upscale_controller(upscaler_dir=str(tmp_path), scales={"x4": 4})
+    img = Image.new("RGB", (2, 2))
+
+    # Stub the pixel/tensor helpers so the flow runs without torch/weights.
+    class _Pixels:
+        def to(self, _device):
+            return self
+
+    monkeypatch.setattr("thenoise.upscale_controller.pil_to_pixels", lambda _i: _Pixels())
+    monkeypatch.setattr("thenoise.upscale_controller.pixels_to_pil", lambda _p: img)
+    monkeypatch.setattr("thenoise.upscale_controller.resize_to_target", lambda p, _w, _h: p)
+    monkeypatch.setattr("thenoise.upscale_controller.build_upscale_pnginfo", lambda *a, **k: {})
+    c._pixel_upscalers.apply = lambda _name, pixels, _scale: pixels
+
+    # 0.0 sentinel -> the detected scale (4) should be exposed on the result.
+    out = c.upscale(img, 0.0, "x4")
+    assert out._upscale_factor == 4
+    # an explicit factor is exposed as-is.
+    out = c.upscale(img, 2, "x4")
+    assert out._upscale_factor == 2
 
 
 def test_upscale_controller_requires_upscaler_dir():

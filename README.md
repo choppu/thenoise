@@ -439,7 +439,7 @@ Pixel-upscales an existing image by `upscale_factor`× with a named pixel upscal
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `image_b64` | `string` | *(required)* | Base64-encoded input image (PNG/JPEG) |
-| `upscale_factor` | `float` | `2.0` | Desired final factor (must be in [1, the upscaler's native scale]; larger values are rejected) |
+| `upscale_factor` | `float` | `0.0` | Desired final factor (`0.0` = the upscaler's detected native scale; must be in [1, that scale]; larger values are rejected) |
 | `pixel_upscaler` | `string` | *(required)* | Pixel upscaler name (no `.safetensors` suffix) from `--upscaler-dir` |
 | `out` | `string` | `png` | `png` (returns an image) or `json` (returns `b64_json`) |
 
@@ -506,5 +506,5 @@ Pixel-upscales an existing image. Model-free — no `--dit`/`--vae`/`--text-enco
 |------|----------|---------|-------------|
 | `--pixel-upscaler` | yes | — | Full path to the pixel upscaler model (e.g. a Real-ESRGAN `.safetensors`) |
 | `--input` | yes | — | Input image to upscale |
-| `--upscale-factor` | no | `2.0` | Upscale factor (must be in [1, the model's detected scale]; larger values are rejected) |
+| `--upscale-factor` | no | `0.0` | Upscale factor (`0.0` = the model's detected scale; must be in [1, that scale]; larger values are rejected) |
 | `--out` | no | `out_upscaled.png` | Output image path |

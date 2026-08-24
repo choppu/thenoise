@@ -29,7 +29,8 @@ class PixelUpscaleController:
 
         Validates the upscaler name and factor, applies the model at its detected
         native scale under the lock, then resizes to the requested factor (rounded
-        to integer output dimensions).
+        to integer output dimensions). An ``upscale_factor`` of ``0.0`` is a
+        sentinel meaning "use the model's detected native scale".
         """
         name = self._pixel_upscalers.validate(pixel_upscaler)
         scale = self._pixel_upscalers.scale(name)
@@ -38,6 +39,8 @@ class PixelUpscaleController:
                 "no pixel upscaler configured; pass --upscaler-dir "
                 "(or run scripts/download_esrgan.py)"
             )
+        if upscale_factor <= 0:
+            upscale_factor = float(scale)
         if not 1 <= upscale_factor <= scale:
             raise ValueError(
                 f"upscale_factor must be in [1, {scale}] for a {scale}x upscaler"
@@ -53,7 +56,7 @@ class PixelUpscaleController:
             )
         out = pixels_to_pil(pixels)
 
-        # Carry over pre-existing text chunks from the input and add ``upscale_data``.
+        out._upscale_factor = upscale_factor
         out._pnginfo = build_upscale_pnginfo(image, name, upscale_factor)
         return out
 

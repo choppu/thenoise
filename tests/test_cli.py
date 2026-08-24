@@ -297,7 +297,7 @@ def test_cli_upscale_defaults_and_is_model_free():
         "--pixel-upscaler", "/models/x.safetensors",
         "--input", "in.png",
     ])
-    assert args.upscale_factor == 2
+    assert args.upscale_factor == 0.0  # 0.0 sentinel -> detected model scale
     assert args.out == "out_upscaled.png"
     assert args.device == "cuda"
     # model-free: no checkpoint or prompt flags on the upscale subcommand

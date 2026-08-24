@@ -36,4 +36,5 @@ def run_upscale(args) -> None:
 
     out_path = ensure_png_extension(args.out)
     out.save(out_path, pnginfo=getattr(out, "_pnginfo", None))
-    logger.info("saved %s (upscaler=%s, factor=%s)", out_path, name, args.upscale_factor)
+    factor = getattr(out, "_upscale_factor", args.upscale_factor)
+    logger.info("saved %s (upscaler=%s, factor=%s)", out_path, name, factor)
