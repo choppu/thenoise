@@ -43,10 +43,38 @@ def _endpoint(app, path):
     raise AssertionError(f"no route {path}")
 
 
-def test_upscalers_lists_names(tmp_path):
+def test_upscalers_lists_names(tmp_path, monkeypatch):
+    from thenoise.upscale.pixel import detect_pixel_upscaler_scale
+
+    # Non-seeded path: detect the scale by reading each model's header. The fake
+    # files aren't real safetensors, so stub detection by filename to return the
+    # actual detected scale the UI relies on.
+    def fake_detect(path):
+        if "x4" in path:
+            return 4
+        if "x2" in path:
+            return 2
+        raise ValueError("unknown scale")
+
+    monkeypatch.setattr(
+        "thenoise.upscale.pixel.detect_pixel_upscaler_scale", fake_detect
+    )
     app = create_app(_fake_runtime(tmp_path))
     res = _endpoint(app, "/upscalers")()
     assert res["upscalers"] == ["RealESRGAN_x4", "sub/x2"]
+    assert res["scales"] == {"RealESRGAN_x4": 4, "sub/x2": 2}
+
+
+def test_upscalers_scales_pass_through(tmp_path):
+    # Pre-seeded scales are served verbatim (no file access needed).
+    runtime = _fake_runtime(tmp_path)
+    runtime._pixel_upscalers._pixel_upscaler_scales = {
+        "RealESRGAN_x4": 4,
+        "sub/x2": 2,
+    }
+    app = create_app(runtime)
+    res = _endpoint(app, "/upscalers")()
+    assert res["scales"] == {"RealESRGAN_x4": 4, "sub/x2": 2}
 
 
 def test_upscalers_available_without_model():
@@ -125,3 +153,44 @@ def test_upscale_defaults_to_png(monkeypatch):
     assert res.status_code == 200
     assert res.media_type == "image/png"
     assert res.body
+
+
+def test_ui_references_external_css_and_js():
+    """index.html links static/style.css and static/app.js (single static endpoint)."""
+    from thenoise.api import _UI_DIR
+    import os
+
+    html = open(os.path.join(_UI_DIR, "index.html"), encoding="utf-8").read()
+    assert '<link rel="stylesheet" href="static/style.css">' in html
+    assert '<script src="static/app.js"></script>' in html
+    assert "<style>" not in html
+    assert "<script>" not in html
+    assert "fonts.googleapis.com" not in html
+
+
+def test_static_serves_css():
+    app = create_app(_empty_runtime())
+    res = _endpoint(app, "/static/{filename:path}")("style.css")
+    assert res.status_code == 200
+    assert res.media_type == "text/css"
+    assert res.body
+
+
+def test_static_serves_js():
+    app = create_app(_empty_runtime())
+    res = _endpoint(app, "/static/{filename:path}")("app.js")
+    assert res.status_code == 200
+    assert res.media_type == "text/javascript"
+    assert res.body
+
+
+def test_static_blocks_path_traversal():
+    app = create_app(_empty_runtime())
+    res = _endpoint(app, "/static/{filename:path}")("../../etc/passwd")
+    assert res.status_code == 403
+
+
+def test_static_missing_file_returns_404():
+    app = create_app(_empty_runtime())
+    res = _endpoint(app, "/static/{filename:path}")("nope.txt")
+    assert res.status_code == 404
