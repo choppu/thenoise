@@ -402,8 +402,8 @@ All fields except `prompt` are optional. Omitted fields use the loaded model's d
 |-------|------|---------|-------------|
 | `prompt` | `string` | *(required)* | Text prompt |
 | `negative_prompt` | `string` | `""` | Negative prompt |
-| `width` | `int` | model default | Output width in pixels (0..4096) |
-| `height` | `int` | model default | Output height in pixels (0..4096) |
+| `width` | `int` | model default | Output width in pixels |
+| `height` | `int` | model default | Output height in pixels |
 | `steps` | `int` | model default | Number of denoising steps |
 | `guidance_scale` | `float` | model default | CFG scale (≤ 1.0 disables CFG) |
 | `seed` | `int` | random | Random seed (`-1` for random) |
@@ -482,8 +482,8 @@ curl -s localhost:8000/upscale \
 |------|----------|---------|-------------|
 | `--prompt` | yes | — | Text prompt |
 | `--negative-prompt` | no | `""` | Negative prompt |
-| `--width` | no | model default | Output width |
-| `--height` | no | model default | Output height |
+| `--width` | no | model default | Output width (0..4096) |
+| `--height` | no | model default | Output height (0..4096) |
 | `--steps` | no | model default | Denoising steps |
 | `--guidance-scale` | no | model default | CFG scale |
 | `--seed` | no | random | Random seed |
