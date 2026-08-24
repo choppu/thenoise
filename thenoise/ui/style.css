@@ -116,7 +116,7 @@ body {
 }
 
 .logo {
-  font-family: 'Share Tech Mono', monospace;
+  font-family: monospace;
   font-size: 1.25rem;
   color: #fff;
   letter-spacing: .08em;

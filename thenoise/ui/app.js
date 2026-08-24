@@ -88,8 +88,7 @@ function readPngText(bytes) {
 }
 
 function decodeLatin1(bytes) {
-  // Latin-1 -> UTF-8 string (PNG tEXt is Latin-1; JSON may contain UTF-8 chars
-  // encoded as Latin-1 bytes, so re-encode to UTF-8 before decodeURIComponent).
+  // PNG tEXt chunks are Latin-1 encoded; decode each byte into a string.
   let s = '';
   for (const b of bytes) s += String.fromCharCode(b);
   return s;
@@ -563,8 +562,11 @@ function renderUpscaleInfo(meta) {
 $('upscale').addEventListener('click', () => {
   const model = $('upscaler_model').value;
   const factor = Math.max(1, parseFloat($('u_scale').value) || 1);
-  if (!model || !uInputB64) return;
-  if (!model) { setTimer('utimer', 'utimer_text', 'error', 'error: select an upscaler model'); return; }
+  if (!model || !uInputB64) {
+    setTimer('utimer', 'utimer_text', 'error',
+      !model ? 'error: select an upscaler model' : 'error: load an input image');
+    return;
+  }
 
   runWithBusy({
     btn: $('upscale'),

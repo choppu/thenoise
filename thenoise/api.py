@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import logging
+import mimetypes
 import os
 import base64
 from typing import List, Literal, Optional
@@ -85,15 +86,20 @@ def create_app(runtime) -> FastAPI:
         with open(os.path.join(_UI_DIR, "index.html"), encoding="utf-8") as f:
             return f.read()
 
-    @app.get("/style.css", response_class=Response)
-    def style():
-        with open(os.path.join(_UI_DIR, "style.css"), encoding="utf-8") as f:
-            return Response(content=f.read(), media_type="text/css")
-
-    @app.get("/app.js", response_class=Response)
-    def script():
-        with open(os.path.join(_UI_DIR, "app.js"), encoding="utf-8") as f:
-            return Response(content=f.read(), media_type="text/javascript")
+    @app.get("/static/{filename:path}", response_class=Response)
+    def static_file(filename: str):
+        """Serve any static UI file (CSS/JS/etc.) from the UI directory."""
+        base = os.path.realpath(_UI_DIR)
+        path = os.path.realpath(os.path.join(base, filename))
+        if not path.startswith(base + os.sep):
+            return Response(status_code=403, content="forbidden")
+        try:
+            with open(path, encoding="utf-8") as f:
+                content = f.read()
+        except OSError:
+            return Response(status_code=404, content="not found")
+        media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        return Response(content=content, media_type=media_type)
 
     @app.get("/health")
     def health():
@@ -122,6 +128,7 @@ def create_app(runtime) -> FastAPI:
             try:
                 scales[name] = runtime.pixel_upscalers.scale(name)
             except Exception:
+                logger.exception("failed to detect scale for upscaler %r", name)
                 scales[name] = 0
         return {"upscalers": names, "scales": scales}
 
