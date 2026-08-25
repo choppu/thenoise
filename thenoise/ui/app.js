@@ -278,16 +278,20 @@ async function loadUpscalers() {
   const none = sel.firstElementChild; // the empty 'none' option
   sel.innerHTML = '';
   sel.appendChild(none);
+  let names = [];
   try {
     const res = await fetch('/upscalers');
     if (res.ok) {
       const data = await res.json();
-      const names = (data.upscalers || []).sort();
+      names = (data.upscalers || []).sort();
       upscalerScales = data.scales || {};
       fillSelect(sel, names);
       fillSelect($('upscaler_model'), names);
     }
   } catch (e) { /* leave just 'none' */ }
+  // No upscaler models found: block the Upscale tab and leave the Generate
+  // tab's pixel-upscaler dropdown empty (refiner-only).
+  $('no_upscaler').classList.toggle('hidden', names.length > 0);
   updateUpscaleMax();
 }
 
@@ -383,6 +387,21 @@ document.addEventListener('click', e => {
 loadLoras();
 loadUpscalers();
 updateUpscaleMax();
+
+// If the server is running without a loaded model, show a notice on the
+// Generate tab explaining that it is unavailable (Upscale stays usable).
+async function applyModelState() {
+  let hasModel = true;
+  try {
+    const res = await fetch('/health');
+    if (res.ok) {
+      const data = await res.json();
+      hasModel = (data.models || []).length > 0;
+    }
+  } catch (e) { /* assume a model is present on network errors */ }
+  $('no_model').classList.toggle('hidden', hasModel);
+}
+applyModelState();
 
 // Runs a request while the button is disabled, the overlay shown and a live
 // timer ticking; resets everything in finally and reports done/error states.

@@ -151,6 +151,43 @@ body {
   border-bottom-color: var(--accent);
 }
 
+/* ---------- no-model notice ---------- */
+.no-model {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: .6rem;
+  text-align: center;
+  padding: 1.5rem;
+  background: var(--panel);
+}
+
+.no-model .no-model-title {
+  font-weight: 600;
+  font-size: 1.05rem;
+  color: var(--text);
+}
+
+.no-model .no-model-sub {
+  color: var(--dim);
+  font-size: .85rem;
+  line-height: 1.6;
+  max-width: 34rem;
+}
+
+.no-model .kbd {
+  color: var(--text);
+  background: var(--input);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: .05rem .4rem;
+  font-family: monospace;
+}
+
 /* ---------- main layout ---------- */
 .views {
   flex: 1;
@@ -165,6 +202,7 @@ body {
 
 .view {
   min-height: 0;
+  position: relative;
 }
 
 .main {

@@ -18,6 +18,12 @@
 
 <div class="views">
 <div class="view" id="view-generate">
+<div class="no-model hidden" id="no_model">
+  <div class="no-model-title">Generate is not available</div>
+  <div class="no-model-sub">No model loaded. Start the server with
+    <span class="kbd">--dit</span>, <span class="kbd">--vae</span> and
+    <span class="kbd">--text-encoder</span> to enable it.</div>
+</div>
 <aside class="sidebar">
   <div class="field">
     <label class="label" for="prompt">Prompt</label>
@@ -153,6 +159,12 @@
 </div><!-- /view-generate -->
 
 <div class="view hidden" id="view-upscale">
+<div class="no-model hidden" id="no_upscaler">
+  <div class="no-model-title">Upscaling is not available</div>
+  <div class="no-model-sub">No upscaler models found. Start the server with
+    <span class="kbd">--upscaler-dir</span> pointing to a directory containing
+    pixel upscaler <span class="kbd">.safetensors</span> files to enable it.</div>
+</div>
 <aside class="sidebar">
   <div class="field">
     <label class="label" for="file">Input image</label>
