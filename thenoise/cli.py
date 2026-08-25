@@ -15,12 +15,12 @@ from __future__ import annotations
 import argparse
 
 
-def _add_model_paths(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--dit", required=True, metavar="PATH",
+def _add_model_paths(p: argparse.ArgumentParser, required: bool = True) -> None:
+    p.add_argument("--dit", required=required, metavar="PATH",
                    help="DiT checkpoint (.safetensors)")
-    p.add_argument("--vae", required=True, metavar="PATH",
+    p.add_argument("--vae", required=required, metavar="PATH",
                    help="VAE checkpoint (.safetensors)")
-    p.add_argument("--text-encoder", required=True, metavar="PATH",
+    p.add_argument("--text-encoder", required=required, metavar="PATH",
                    help="text encoder checkpoint (.safetensors)")
     p.add_argument("--lora-dir", default="", metavar="PATH",
                    help="directory containing LoRA .safetensors files "
@@ -45,9 +45,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="thenoise")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # serve
+    # serve: model paths are optional — without them the server runs model-free
+    # and only the pixel-upscale tab is usable.
     serve = sub.add_parser("serve", help="run the FastAPI HTTP server")
-    _add_model_paths(serve)
+    _add_model_paths(serve, required=False)
     _add_upscaler_args(serve)
     serve.add_argument("--host", default="127.0.0.1",
                        help="bind host (default: 127.0.0.1)")
@@ -89,7 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
                           "upscaler above factor 2; 'no-refiner': pixel upscaler "
                           "only (no latent 2x)")
     gen.add_argument("--sampler", choices=["euler", "er_sde"], default=None,
-                     help="denoising solver (default: er_sde)")
+                     help="denoising solver (default: auto)")
     gen.add_argument("--qwen-vae-enhance", action="store_true",
                      help="apply the Nyquist Notch post filter to decoded pixels "
                           "(removes 2px grid artifacts)")

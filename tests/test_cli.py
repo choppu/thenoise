@@ -220,8 +220,19 @@ def test_cli_serve_defaults():
 
 
 def test_cli_serve_requires_paths():
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(["serve"])
+    """serve model paths are optional; a bare `serve` must parse cleanly."""
+    args = build_parser().parse_args(["serve"])
+    assert args.command == "serve"
+    assert args.dit is None
+    assert args.vae is None
+    assert args.text_encoder is None
+
+
+def test_cli_serve_partial_paths_parse():
+    """Partial model paths still parse at the CLI level (validated at runtime)."""
+    args = build_parser().parse_args(["serve", "--dit", "d.safetensors"])
+    assert args.dit == "d.safetensors"
+    assert args.vae is None
 
 
 def test_cli_generate_parses():

@@ -94,7 +94,7 @@ def create_app(runtime) -> FastAPI:
         if not path.startswith(base + os.sep):
             return Response(status_code=403, content="forbidden")
         try:
-            with open(path, encoding="utf-8") as f:
+            with open(path, "rb") as f:
                 content = f.read()
         except OSError:
             return Response(status_code=404, content="not found")

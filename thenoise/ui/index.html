@@ -11,13 +11,19 @@
 <body>
 
 <div class="tabs">
-  <span class="logo">The<span class="logo-accent">Noise</span></span>
+  <img class="logo" src="static/logo.png" alt="TheNoise" title="TheNoise">
   <button class="tab ctrl active" data-tab="generate">Generate</button>
   <button class="tab ctrl" data-tab="upscale">Upscale</button>
 </div>
 
 <div class="views">
 <div class="view" id="view-generate">
+<div class="no-model hidden" id="no_model">
+  <div class="no-model-title">Generate is not available</div>
+  <div class="no-model-sub">No model loaded. Start the server with
+    <span class="kbd">--dit</span>, <span class="kbd">--vae</span> and
+    <span class="kbd">--text-encoder</span> to enable it.</div>
+</div>
 <aside class="sidebar">
   <div class="field">
     <label class="label" for="prompt">Prompt</label>
@@ -60,6 +66,7 @@
   <div class="field">
     <label class="label" for="sampler">Sampler</label>
     <select id="sampler">
+      <option value="">auto</option>
       <option value="er_sde">er_sde</option>
       <option value="euler">euler</option>
     </select>
@@ -92,11 +99,11 @@
     <label class="label" for="upscale_type">Upscale type</label>
     <select id="upscale_type">
       <option value="refined">refined (latent 2x + refiner)</option>
-      <option value="no-refiner">no-refiner (pixel upscaler only)</option>
+      <option value="no-refiner" id="no_refiner_opt">no-refiner (pixel upscaler only)</option>
     </select>
   </div>
 
-  <div class="field">
+  <div class="field" id="pixel_upscaler_field">
     <label class="label" for="pixel_upscaler">Pixel upscaler <span class="hint">(from --upscaler-dir)</span></label>
     <select id="pixel_upscaler">
       <option value="">none</option>
@@ -130,20 +137,16 @@
   <div class="stage" id="stage">
     <div class="placeholder" id="placeholder">Enter a prompt and click <span class="kbd">Generate</span></div>
     <img id="image" alt="generated" style="display:none">
-    <button class="dl ctrl" id="download" disabled title="Download PNG">&#8595; Download</button>
+    <div class="actions">
+      <button class="dl ctrl" id="download" disabled title="Download PNG">&#8595; Download</button>
+      <button class="info ctrl" id="info_btn" disabled title="Image info" aria-label="Image info">&#9432;</button>
+    </div>
     <div class="overlay hidden" id="overlay">
       <div class="spinner"></div>
     </div>
   </div>
 
   <div class="timer" id="timer"><span class="dot"></span><span id="timer_text">idle</span></div>
-
-  <details class="info" id="info">
-    <summary class="label"><span class="chev">&#9654;</span> Image info</summary>
-    <div class="info-body">
-      <dl class="info-grid" id="info_grid"></dl>
-    </div>
-  </details>
 
   <div class="history hidden" id="history">
     <div class="history-head label">History</div>
@@ -153,6 +156,12 @@
 </div><!-- /view-generate -->
 
 <div class="view hidden" id="view-upscale">
+<div class="no-model hidden" id="no_upscaler">
+  <div class="no-model-title">Upscaling is not available</div>
+  <div class="no-model-sub">No upscaler models found. Start the server with
+    <span class="kbd">--upscaler-dir</span> pointing to a directory containing
+    pixel upscaler <span class="kbd">.safetensors</span> files to enable it.</div>
+</div>
 <aside class="sidebar">
   <div class="field">
     <label class="label" for="file">Input image</label>
@@ -169,15 +178,13 @@
     <select id="upscaler_model"></select>
   </div>
 
-  <div class="row">
-    <div class="field">
-      <label class="label" for="max_res">Max resolution <span class="hint">px</span></label>
-      <input type="number" id="max_res" placeholder="auto">
+  <div class="range">
+    <div class="range-head">
+      <label class="label" for="u_factor">Upscale factor</label>
+      <span class="val" id="u_factor_val">1.00</span>
     </div>
-    <div class="field">
-      <label class="label" for="u_scale">Scale factor</label>
-      <input type="number" id="u_scale" step="0.25" placeholder="auto">
-    </div>
+    <input type="range" id="u_factor" min="1" max="8" step="0.25" value="1">
+    <span class="final-res" id="u_final_res"></span>
   </div>
 
   <button class="btn" id="upscale" disabled>Upscale</button>
@@ -192,21 +199,29 @@
     <div class="result hidden" id="uresult">
       <img id="u_img" alt="upscaled">
     </div>
-    <button class="dl ctrl" id="udownload" disabled title="Download PNG">&#8595; Download</button>
+    <div class="actions">
+      <button class="dl ctrl" id="udownload" disabled title="Download PNG">&#8595; Download</button>
+      <button class="info ctrl" id="uinfo_btn" disabled title="Upscale info" aria-label="Upscale info">&#9432;</button>
+    </div>
     <div class="overlay hidden" id="uoverlay"><div class="spinner"></div></div>
   </div>
 
   <div class="timer" id="utimer"><span class="dot"></span><span id="utimer_text">idle</span></div>
-
-  <details class="info" id="uinfo">
-    <summary class="label"><span class="chev">&#9654;</span> Upscale info</summary>
-    <div class="info-body">
-      <dl class="info-grid" id="uinfo_grid"></dl>
-    </div>
-  </details>
 </main>
 </div><!-- /view-upscale -->
 </div><!-- /views -->
+
+<div class="modal hidden" id="info_modal">
+  <div class="backdrop" id="info_backdrop"></div>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span class="modal-title" id="info_modal_title"></span>
+      <button class="modal-close" id="info_modal_close" title="Close" aria-label="Close">&#10005;</button>
+    </div>
+    <dl class="info-grid" id="info_modal_grid"></dl>
+  </div>
+</div>
+
 <script src="static/app.js"></script>
 </body>
 </html>

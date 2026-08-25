@@ -12,20 +12,34 @@ def _serve(args) -> None:
     )
 
     runtime = Runtime(settings)
-    runtime.load(
-        ModelPaths(
-            dit_path=args.dit,
-            vae_path=args.vae,
-            text_encoder_path=args.text_encoder,
-            lora_dir=args.lora_dir,
-        ),
-    )
+
+    # Model paths are optional. Load the model only when all three checkpoints
+    # are supplied; otherwise serve model-free (only upscale is available).
+    model_paths = [args.dit, args.vae, args.text_encoder]
+    if any(model_paths):
+        if not all(model_paths):
+            raise SystemExit(
+                "serve: to load a model you must supply --dit, --vae and "
+                "--text-encoder together; omit all three to run without a model"
+            )
+        runtime.load(
+            ModelPaths(
+                dit_path=args.dit,
+                vae_path=args.vae,
+                text_encoder_path=args.text_encoder,
+                lora_dir=args.lora_dir,
+            ),
+        )
 
     from .api import create_app
     import uvicorn
 
     app = create_app(runtime)
-    print(f"thenoise serving model '{runtime.model_name}' on {settings.device}")
+    if runtime.available():
+        print(f"thenoise serving model '{runtime.model_name}' on {settings.device}")
+    else:
+        print(f"thenoise serving WITHOUT a model on {settings.device} "
+              f"(only upscaling is available)")
     uvicorn.run(app, host=settings.host, port=settings.port)
 
 

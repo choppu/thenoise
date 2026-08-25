@@ -11,10 +11,32 @@ function bindRange(sliderId, valId, digits = 2) {
 bindRange('film_grain', 'film_grain_val');
 bindRange('sharpening', 'sharpening_val');
 
+// Set a slider's value and mirror it in its companion label.
+function setRange(sliderId, valId, value, digits = 2) {
+  $(sliderId).value = value;
+  $(valId).textContent = value.toFixed(digits);
+}
+// Mirror a slider's current value into its companion label.
+function rangeLabel(sliderId, valId, digits = 2) {
+  $(valId).textContent = parseFloat($(sliderId).value).toFixed(digits);
+}
+// Cap a slider at `max`, clamping the current value if it exceeds it.
+function clampSlider(slider, max) {
+  slider.max = max;
+  if (parseFloat(slider.value) > max) slider.value = max;
+}
+
 const LATENT_SCALE = 2; // latent refiner multiplier
 
 function updateFactorVal() {
-  $('upscale_factor_val').textContent = parseFloat($('upscale_factor').value).toFixed(2);
+  rangeLabel('upscale_factor', 'upscale_factor_val');
+}
+
+// Render "W × H px" for dims scaled by `factor` into resEl; clear when dims unknown.
+function renderRes(resEl, w, h, factor) {
+  resEl.textContent = (w && h)
+    ? ` ${Math.round(w * factor)} \u00d7 ${Math.round(h * factor)} px`
+    : '';
 }
 
 // Show the final output resolution (base width/height x factor) under the slider.
@@ -22,9 +44,7 @@ function updateFinalRes() {
   const w = parseInt($('width').value, 10);
   const h = parseInt($('height').value, 10);
   const factor = parseFloat($('upscale_factor').value) || 1;
-  const el = $('final_res');
-  if (isNaN(w) || isNaN(h)) { el.textContent = ''; return; }
-  el.textContent = ` ${Math.round(w * factor)} \u00d7 ${Math.round(h * factor)} px`;
+  renderRes($('final_res'), w, h, factor);
 }
 
 // Max slider value follows the selected pixel upscaler's native scale:
@@ -39,10 +59,7 @@ function updateUpscaleMax() {
   const max = type === 'no-refiner'
     ? (scale || 1)
     : (scale ? LATENT_SCALE * scale : LATENT_SCALE);
-  slider.max = max;
-  if (parseFloat(slider.value) > max) {
-    slider.value = max;
-  }
+  clampSlider(slider, max);
   updateFactorVal();
   updateFinalRes();
 }
@@ -122,8 +139,9 @@ function addRow(grid, label, value, cls) {
   grid.append(dt, dd);
 }
 
+// Render image metadata into the shared info grid (used by the info popup).
 function renderInfo(meta) {
-  const grid = $('info_grid');
+  const grid = $('info_modal_grid');
   grid.innerHTML = '';
   if (!meta || typeof meta !== 'object') {
     const dd = document.createElement('dd');
@@ -186,7 +204,7 @@ function selectHistory(i) {
   $('placeholder').style.display = 'none';
   renderInfo(item.meta);
   applySettings(item.meta);
-  $('download').disabled = false;
+  setStageActions($('download'), $('info_btn'), true);
   const items = $('history_items').querySelectorAll('.hist-item');
   items.forEach((el, idx) => el.classList.toggle('current', idx === i));
 }
@@ -202,24 +220,16 @@ function applySettings(meta) {
   if (meta.seed != null) $('seed').value = meta.seed;
   if (meta.sampler) $('sampler').value = meta.sampler;
   if (meta.upscale_factor != null) {
-    $('upscale_factor').value = meta.upscale_factor;
-    $('upscale_factor_val').textContent = meta.upscale_factor.toFixed(2);
+    setRange('upscale_factor', 'upscale_factor_val', meta.upscale_factor);
   } else if (meta.upscale === true) {
     // legacy metadata: 'upscale: true' == 2x refined
-    $('upscale_factor').value = 2;
-    $('upscale_factor_val').textContent = '2.00';
+    setRange('upscale_factor', 'upscale_factor_val', 2);
     $('upscale_type').value = 'refined';
   }
   if (meta.upscale_type) $('upscale_type').value = meta.upscale_type;
   if (meta.qwen_vae_enhance != null) $('qwen_vae_enhance').checked = meta.qwen_vae_enhance;
-  if (meta.film_grain != null) {
-    $('film_grain').value = meta.film_grain;
-    $('film_grain_val').textContent = meta.film_grain.toFixed(2);
-  }
-  if (meta.sharpening != null) {
-    $('sharpening').value = meta.sharpening;
-    $('sharpening_val').textContent = meta.sharpening.toFixed(2);
-  }
+  if (meta.film_grain != null) setRange('film_grain', 'film_grain_val', meta.film_grain);
+  if (meta.sharpening != null) setRange('sharpening', 'sharpening_val', meta.sharpening);
   if (Array.isArray(meta.lora_specs)) {
     $('lora_specs').value = meta.lora_specs.join('\n');
   }
@@ -244,6 +254,12 @@ function download(url, filename) {
   a.remove();
 }
 
+// Toggle the download + info buttons together for a stage's image.
+function setStageActions(dlBtn, infoBtn, enabled) {
+  dlBtn.disabled = !enabled;
+  infoBtn.disabled = !enabled;
+}
+
 $('download').addEventListener('click', () => {
   const seed = currentMeta && currentMeta.seed != null ? currentMeta.seed : 'x';
   download(currentUrl, `thenoise_${seed}.png`);
@@ -252,13 +268,8 @@ $('download').addEventListener('click', () => {
 let loras = [];
 
 async function loadLoras() {
-  try {
-    const res = await fetch('/lora');
-    if (res.ok) {
-      const data = await res.json();
-      loras = (data.loras || []).sort();
-    }
-  } catch (e) { loras = []; }
+  const data = await fetchJSON('/lora');
+  loras = data ? (data.loras || []).sort() : [];
 }
 
 let upscalerScales = {};  // name -> detected native scale (2/4)
@@ -273,21 +284,42 @@ function fillSelect(sel, names) {
   }
 }
 
+// Fetch JSON with graceful error handling; returns null on failure.
+async function fetchJSON(url) {
+  try {
+    const res = await fetch(url);
+    if (res.ok) return await res.json();
+  } catch (e) { /* fall through to null */ }
+  return null;
+}
+
 async function loadUpscalers() {
   const sel = $('pixel_upscaler');
   const none = sel.firstElementChild; // the empty 'none' option
   sel.innerHTML = '';
   sel.appendChild(none);
-  try {
-    const res = await fetch('/upscalers');
-    if (res.ok) {
-      const data = await res.json();
-      const names = (data.upscalers || []).sort();
-      upscalerScales = data.scales || {};
-      fillSelect(sel, names);
-      fillSelect($('upscaler_model'), names);
-    }
-  } catch (e) { /* leave just 'none' */ }
+  let names = [];
+  const data = await fetchJSON('/upscalers');
+  if (data) {
+    names = (data.upscalers || []).sort();
+    upscalerScales = data.scales || {};
+    fillSelect(sel, names);
+    fillSelect($('upscaler_model'), names);
+    applyUpscalerDefaults();
+  }
+  // No upscaler models found: block the Upscale tab, leave the Generate
+  // tab's pixel-upscaler dropdown empty (refiner-only), hide the selector
+  // and drop the no-refiner upscale_type option.
+  const noRefiner = $('no_refiner_opt');
+  const noUpscalers = names.length === 0;
+  $('no_upscaler').classList.toggle('hidden', !noUpscalers);
+  $('pixel_upscaler_field').classList.toggle('hidden', noUpscalers);
+  if (noUpscalers) {
+    if (noRefiner.parentElement) noRefiner.remove();
+    if ($('upscale_type').value === 'no-refiner') $('upscale_type').value = 'refined';
+  } else {
+    $('upscale_type').appendChild(noRefiner);
+  }
   updateUpscaleMax();
 }
 
@@ -384,6 +416,31 @@ loadLoras();
 loadUpscalers();
 updateUpscaleMax();
 
+// If the server is running without a loaded model, show a notice on the
+// Generate tab explaining that it is unavailable (Upscale stays usable).
+async function applyModelState() {
+  let hasModel = true;
+  try {
+    const res = await fetch('/health');
+    if (res.ok) {
+      const data = await res.json();
+      hasModel = (data.models || []).length > 0;
+    }
+  } catch (e) { /* assume a model is present on network errors */ }
+  $('no_model').classList.toggle('hidden', hasModel);
+}
+applyModelState();
+
+async function postJSON(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text() || res.statusText);
+  return await res.blob();
+}
+
 // Runs a request while the button is disabled, the overlay shown and a live
 // timer ticking; resets everything in finally and reports done/error states.
 async function runWithBusy({ btn, overlay, timerEl, timerTextEl, request, onSuccess }) {
@@ -446,17 +503,11 @@ $('generate').addEventListener('click', () => {
       const samplerVal = $('sampler').value;
       if (samplerVal) body.sampler = samplerVal;
 
-      const res = await fetch('/text2image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(await res.text() || res.statusText);
-      return await res.blob();
+      return await postJSON('/text2image', body);
     },
     onSuccess: async (blob) => {
       currentUrl = URL.createObjectURL(blob);
-      $('download').disabled = false;
+      setStageActions($('download'), $('info_btn'), true);
       $('image').src = currentUrl;
       $('image').style.display = 'block';
       $('placeholder').style.display = 'none';
@@ -473,15 +524,14 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === t));
 }));
 
-let uInputDataUrl = null;  // data URL of the loaded input image
 let uInputB64 = null;      // base64 (no prefix) sent to /upscale
 let uInputDims = null;     // {w, h} of the input
 let uOutUrl = null;        // object URL of the upscaled result
+let uOutMeta = null;       // upscale metadata
 
 const dz = $('dropzone');
 const fileInput = $('file');
 const dzName = $('dz_name');
-const inputMaxDim = () => uInputDims ? Math.max(uInputDims.w, uInputDims.h) : 0;
 
 function loadUpscaleFile(file) {
   if (!file || !file.type.startsWith('image/')) return;
@@ -490,12 +540,13 @@ function loadUpscaleFile(file) {
     const dataUrl = reader.result;
     const img = new Image();
     img.onload = () => {
-      uInputDataUrl = dataUrl;
       uInputB64 = dataUrl.split(',')[1];
       uInputDims = { w: img.naturalWidth, h: img.naturalHeight };
+      updateUpscaleTabFactor();
       // reset any previous result
       if (uOutUrl) { URL.revokeObjectURL(uOutUrl); uOutUrl = null; }
-      $('udownload').disabled = true;
+      uOutMeta = null;
+      setStageActions($('udownload'), $('uinfo_btn'), false);
       // show the selected image as a single image in the stage
       $('usingle_img').src = dataUrl;
       $('usingle').classList.remove('hidden');
@@ -522,33 +573,33 @@ dz.addEventListener('drop', e => {
   loadUpscaleFile(e.dataTransfer.files[0]);
 });
 
-/* max resolution (px) <-> scale factor linkage (both reference scale factor) */
-function syncScaleToMaxRes() {
-  const dim = inputMaxDim();
-  const sf = parseFloat($('u_scale').value);
-  if (dim && sf) $('max_res').value = Math.round(sf * dim);
+/* Upscale factor slider: capped at the selected upscaler's native scale. */
+function updateUpscaleTabFactor() {
+  const factor = parseFloat($('u_factor').value) || 1;
+  $('u_factor_val').textContent = factor.toFixed(2);
+  renderRes($('u_final_res'),
+    uInputDims && uInputDims.w, uInputDims && uInputDims.h, factor);
+}
+function updateUpscaleTabMax() {
+  const model = $('upscaler_model').value;
+  const max = model ? (upscalerScales[model] || 2) : 1;
+  clampSlider($('u_factor'), max);
+  updateUpscaleTabFactor();
 }
 
-/* Pre-fill scale factor + max resolution from the selected upscaler's native scale. */
+/* Pre-fill the upscale factor from the selected upscaler's native scale. */
 function applyUpscalerDefaults() {
   const model = $('upscaler_model').value;
   const scale = upscalerScales[model];
-  if (scale && inputMaxDim()) {
-    $('u_scale').value = scale;
-    syncScaleToMaxRes();
-  }
+  if (scale) $('u_factor').value = scale;
+  updateUpscaleTabMax();
 }
-$('u_scale').addEventListener('input', syncScaleToMaxRes);
-$('max_res').addEventListener('input', () => {
-  const dim = inputMaxDim();
-  const target = parseFloat($('max_res').value);
-  if (dim && target) $('u_scale').value = (target / dim).toFixed(2);
-});
+$('u_factor').addEventListener('input', updateUpscaleTabFactor);
 $('upscaler_model').addEventListener('change', applyUpscalerDefaults);
 
 /* upscale info panel (reuses addRow for the dl grid) */
 function renderUpscaleInfo(meta) {
-  const grid = $('uinfo_grid');
+  const grid = $('info_modal_grid');
   grid.innerHTML = '';
   addRow(grid, 'Input resolution', uInputDims ? uInputDims.w + ' × ' + uInputDims.h : '—');
   const up = $('u_img');
@@ -561,7 +612,7 @@ function renderUpscaleInfo(meta) {
 
 $('upscale').addEventListener('click', () => {
   const model = $('upscaler_model').value;
-  const factor = Math.max(1, parseFloat($('u_scale').value) || 1);
+  const factor = Math.max(1, parseFloat($('u_factor').value) || 1);
   if (!model || !uInputB64) {
     setTimer('utimer', 'utimer_text', 'error',
       !model ? 'error: select an upscaler model' : 'error: load an input image');
@@ -574,17 +625,11 @@ $('upscale').addEventListener('click', () => {
     timerEl: 'utimer',
     timerTextEl: 'utimer_text',
     request: async () => {
-      const res = await fetch('/upscale', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image_b64: uInputB64,
-          upscale_factor: factor,
-          pixel_upscaler: model,
-        }),
+      return await postJSON('/upscale', {
+        image_b64: uInputB64,
+        upscale_factor: factor,
+        pixel_upscaler: model,
       });
-      if (!res.ok) throw new Error(await res.text() || res.statusText);
-      return await res.blob();
     },
     onSuccess: async (blob) => {
       if (uOutUrl) URL.revokeObjectURL(uOutUrl);
@@ -595,9 +640,9 @@ $('upscale').addEventListener('click', () => {
       $('usingle').classList.add('hidden');
       $('uplaceholder').style.display = 'none';
       $('uresult').classList.remove('hidden');
-      $('udownload').disabled = false;
-      const meta = await decodeMeta(blob, 'upscale_data');
-      renderUpscaleInfo(meta);
+      setStageActions($('udownload'), $('uinfo_btn'), true);
+      uOutMeta = await decodeMeta(blob, 'upscale_data');
+      renderUpscaleInfo(uOutMeta);
     },
   });
 });
@@ -605,3 +650,18 @@ $('upscale').addEventListener('click', () => {
 $('udownload').addEventListener('click', () => {
   download(uOutUrl, 'upscaled.png');
 });
+
+/* ---------- info popup ---------- */
+function openInfo(title, render) {
+  render();
+  $('info_modal_title').textContent = title;
+  $('info_modal').classList.remove('hidden');
+}
+function closeInfo() {
+  $('info_modal').classList.add('hidden');
+}
+$('info_btn').addEventListener('click', () => openInfo('Image info', () => renderInfo(currentMeta)));
+$('uinfo_btn').addEventListener('click', () => openInfo('Upscale info', () => renderUpscaleInfo(uOutMeta)));
+$('info_modal_close').addEventListener('click', closeInfo);
+$('info_backdrop').addEventListener('click', closeInfo);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeInfo(); });
