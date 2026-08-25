@@ -17,14 +17,19 @@ function updateFactorVal() {
   $('upscale_factor_val').textContent = parseFloat($('upscale_factor').value).toFixed(2);
 }
 
+// Render "W × H px" for dims scaled by `factor` into resEl; clear when dims unknown.
+function renderRes(resEl, w, h, factor) {
+  resEl.textContent = (w && h)
+    ? ` ${Math.round(w * factor)} \u00d7 ${Math.round(h * factor)} px`
+    : '';
+}
+
 // Show the final output resolution (base width/height x factor) under the slider.
 function updateFinalRes() {
   const w = parseInt($('width').value, 10);
   const h = parseInt($('height').value, 10);
   const factor = parseFloat($('upscale_factor').value) || 1;
-  const el = $('final_res');
-  if (isNaN(w) || isNaN(h)) { el.textContent = ''; return; }
-  el.textContent = ` ${Math.round(w * factor)} \u00d7 ${Math.round(h * factor)} px`;
+  renderRes($('final_res'), w, h, factor);
 }
 
 // Max slider value follows the selected pixel upscaler's native scale:
@@ -287,11 +292,22 @@ async function loadUpscalers() {
       upscalerScales = data.scales || {};
       fillSelect(sel, names);
       fillSelect($('upscaler_model'), names);
+      applyUpscalerDefaults();
     }
   } catch (e) { /* leave just 'none' */ }
-  // No upscaler models found: block the Upscale tab and leave the Generate
-  // tab's pixel-upscaler dropdown empty (refiner-only).
-  $('no_upscaler').classList.toggle('hidden', names.length > 0);
+  // No upscaler models found: block the Upscale tab, leave the Generate
+  // tab's pixel-upscaler dropdown empty (refiner-only), hide the selector
+  // and drop the no-refiner upscale_type option.
+  const noRefiner = $('no_refiner_opt');
+  const noUpscalers = names.length === 0;
+  $('no_upscaler').classList.toggle('hidden', !noUpscalers);
+  $('pixel_upscaler_field').classList.toggle('hidden', noUpscalers);
+  if (noUpscalers) {
+    if (noRefiner.parentElement) noRefiner.remove();
+    if ($('upscale_type').value === 'no-refiner') $('upscale_type').value = 'refined';
+  } else {
+    $('upscale_type').appendChild(noRefiner);
+  }
   updateUpscaleMax();
 }
 
@@ -492,7 +508,6 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === t));
 }));
 
-let uInputDataUrl = null;  // data URL of the loaded input image
 let uInputB64 = null;      // base64 (no prefix) sent to /upscale
 let uInputDims = null;     // {w, h} of the input
 let uOutUrl = null;        // object URL of the upscaled result
@@ -500,7 +515,6 @@ let uOutUrl = null;        // object URL of the upscaled result
 const dz = $('dropzone');
 const fileInput = $('file');
 const dzName = $('dz_name');
-const inputMaxDim = () => uInputDims ? Math.max(uInputDims.w, uInputDims.h) : 0;
 
 function loadUpscaleFile(file) {
   if (!file || !file.type.startsWith('image/')) return;
@@ -509,9 +523,9 @@ function loadUpscaleFile(file) {
     const dataUrl = reader.result;
     const img = new Image();
     img.onload = () => {
-      uInputDataUrl = dataUrl;
       uInputB64 = dataUrl.split(',')[1];
       uInputDims = { w: img.naturalWidth, h: img.naturalHeight };
+      updateUpscaleTabFactor();
       // reset any previous result
       if (uOutUrl) { URL.revokeObjectURL(uOutUrl); uOutUrl = null; }
       $('udownload').disabled = true;
@@ -541,28 +555,30 @@ dz.addEventListener('drop', e => {
   loadUpscaleFile(e.dataTransfer.files[0]);
 });
 
-/* max resolution (px) <-> scale factor linkage (both reference scale factor) */
-function syncScaleToMaxRes() {
-  const dim = inputMaxDim();
-  const sf = parseFloat($('u_scale').value);
-  if (dim && sf) $('max_res').value = Math.round(sf * dim);
+/* Upscale factor slider: capped at the selected upscaler's native scale. */
+function updateUpscaleTabFactor() {
+  const factor = parseFloat($('u_factor').value) || 1;
+  $('u_factor_val').textContent = factor.toFixed(2);
+  renderRes($('u_final_res'),
+    uInputDims && uInputDims.w, uInputDims && uInputDims.h, factor);
+}
+function updateUpscaleTabMax() {
+  const model = $('upscaler_model').value;
+  const max = model ? (upscalerScales[model] || 2) : 1;
+  const slider = $('u_factor');
+  slider.max = max;
+  if (parseFloat(slider.value) > max) slider.value = max;
+  updateUpscaleTabFactor();
 }
 
-/* Pre-fill scale factor + max resolution from the selected upscaler's native scale. */
+/* Pre-fill the upscale factor from the selected upscaler's native scale. */
 function applyUpscalerDefaults() {
   const model = $('upscaler_model').value;
   const scale = upscalerScales[model];
-  if (scale && inputMaxDim()) {
-    $('u_scale').value = scale;
-    syncScaleToMaxRes();
-  }
+  if (scale) $('u_factor').value = scale;
+  updateUpscaleTabMax();
 }
-$('u_scale').addEventListener('input', syncScaleToMaxRes);
-$('max_res').addEventListener('input', () => {
-  const dim = inputMaxDim();
-  const target = parseFloat($('max_res').value);
-  if (dim && target) $('u_scale').value = (target / dim).toFixed(2);
-});
+$('u_factor').addEventListener('input', updateUpscaleTabFactor);
 $('upscaler_model').addEventListener('change', applyUpscalerDefaults);
 
 /* upscale info panel (reuses addRow for the dl grid) */
@@ -580,7 +596,7 @@ function renderUpscaleInfo(meta) {
 
 $('upscale').addEventListener('click', () => {
   const model = $('upscaler_model').value;
-  const factor = Math.max(1, parseFloat($('u_scale').value) || 1);
+  const factor = Math.max(1, parseFloat($('u_factor').value) || 1);
   if (!model || !uInputB64) {
     setTimer('utimer', 'utimer_text', 'error',
       !model ? 'error: select an upscaler model' : 'error: load an input image');

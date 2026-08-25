@@ -277,8 +277,6 @@ body {
 
 .sidebar input:focus, .sidebar textarea:focus, .sidebar select:focus {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .sidebar textarea {

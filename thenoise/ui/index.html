@@ -66,6 +66,7 @@
   <div class="field">
     <label class="label" for="sampler">Sampler</label>
     <select id="sampler">
+      <option value="">auto</option>
       <option value="er_sde">er_sde</option>
       <option value="euler">euler</option>
     </select>
@@ -98,11 +99,11 @@
     <label class="label" for="upscale_type">Upscale type</label>
     <select id="upscale_type">
       <option value="refined">refined (latent 2x + refiner)</option>
-      <option value="no-refiner">no-refiner (pixel upscaler only)</option>
+      <option value="no-refiner" id="no_refiner_opt">no-refiner (pixel upscaler only)</option>
     </select>
   </div>
 
-  <div class="field">
+  <div class="field" id="pixel_upscaler_field">
     <label class="label" for="pixel_upscaler">Pixel upscaler <span class="hint">(from --upscaler-dir)</span></label>
     <select id="pixel_upscaler">
       <option value="">none</option>
@@ -181,15 +182,13 @@
     <select id="upscaler_model"></select>
   </div>
 
-  <div class="row">
-    <div class="field">
-      <label class="label" for="max_res">Max resolution <span class="hint">px</span></label>
-      <input type="number" id="max_res" placeholder="auto">
+  <div class="range">
+    <div class="range-head">
+      <label class="label" for="u_factor">Upscale factor</label>
+      <span class="val" id="u_factor_val">1.00</span>
     </div>
-    <div class="field">
-      <label class="label" for="u_scale">Scale factor</label>
-      <input type="number" id="u_scale" step="0.25" placeholder="auto">
-    </div>
+    <input type="range" id="u_factor" min="1" max="8" step="0.25" value="1">
+    <span class="final-res" id="u_final_res"></span>
   </div>
 
   <button class="btn" id="upscale" disabled>Upscale</button>
