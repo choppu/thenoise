@@ -11,10 +11,25 @@ function bindRange(sliderId, valId, digits = 2) {
 bindRange('film_grain', 'film_grain_val');
 bindRange('sharpening', 'sharpening_val');
 
+// Set a slider's value and mirror it in its companion label.
+function setRange(sliderId, valId, value, digits = 2) {
+  $(sliderId).value = value;
+  $(valId).textContent = value.toFixed(digits);
+}
+// Mirror a slider's current value into its companion label.
+function rangeLabel(sliderId, valId, digits = 2) {
+  $(valId).textContent = parseFloat($(sliderId).value).toFixed(digits);
+}
+// Cap a slider at `max`, clamping the current value if it exceeds it.
+function clampSlider(slider, max) {
+  slider.max = max;
+  if (parseFloat(slider.value) > max) slider.value = max;
+}
+
 const LATENT_SCALE = 2; // latent refiner multiplier
 
 function updateFactorVal() {
-  $('upscale_factor_val').textContent = parseFloat($('upscale_factor').value).toFixed(2);
+  rangeLabel('upscale_factor', 'upscale_factor_val');
 }
 
 // Render "W × H px" for dims scaled by `factor` into resEl; clear when dims unknown.
@@ -44,10 +59,7 @@ function updateUpscaleMax() {
   const max = type === 'no-refiner'
     ? (scale || 1)
     : (scale ? LATENT_SCALE * scale : LATENT_SCALE);
-  slider.max = max;
-  if (parseFloat(slider.value) > max) {
-    slider.value = max;
-  }
+  clampSlider(slider, max);
   updateFactorVal();
   updateFinalRes();
 }
@@ -207,24 +219,16 @@ function applySettings(meta) {
   if (meta.seed != null) $('seed').value = meta.seed;
   if (meta.sampler) $('sampler').value = meta.sampler;
   if (meta.upscale_factor != null) {
-    $('upscale_factor').value = meta.upscale_factor;
-    $('upscale_factor_val').textContent = meta.upscale_factor.toFixed(2);
+    setRange('upscale_factor', 'upscale_factor_val', meta.upscale_factor);
   } else if (meta.upscale === true) {
     // legacy metadata: 'upscale: true' == 2x refined
-    $('upscale_factor').value = 2;
-    $('upscale_factor_val').textContent = '2.00';
+    setRange('upscale_factor', 'upscale_factor_val', 2);
     $('upscale_type').value = 'refined';
   }
   if (meta.upscale_type) $('upscale_type').value = meta.upscale_type;
   if (meta.qwen_vae_enhance != null) $('qwen_vae_enhance').checked = meta.qwen_vae_enhance;
-  if (meta.film_grain != null) {
-    $('film_grain').value = meta.film_grain;
-    $('film_grain_val').textContent = meta.film_grain.toFixed(2);
-  }
-  if (meta.sharpening != null) {
-    $('sharpening').value = meta.sharpening;
-    $('sharpening_val').textContent = meta.sharpening.toFixed(2);
-  }
+  if (meta.film_grain != null) setRange('film_grain', 'film_grain_val', meta.film_grain);
+  if (meta.sharpening != null) setRange('sharpening', 'sharpening_val', meta.sharpening);
   if (Array.isArray(meta.lora_specs)) {
     $('lora_specs').value = meta.lora_specs.join('\n');
   }
@@ -257,13 +261,8 @@ $('download').addEventListener('click', () => {
 let loras = [];
 
 async function loadLoras() {
-  try {
-    const res = await fetch('/lora');
-    if (res.ok) {
-      const data = await res.json();
-      loras = (data.loras || []).sort();
-    }
-  } catch (e) { loras = []; }
+  const data = await fetchJSON('/lora');
+  loras = data ? (data.loras || []).sort() : [];
 }
 
 let upscalerScales = {};  // name -> detected native scale (2/4)
@@ -278,23 +277,29 @@ function fillSelect(sel, names) {
   }
 }
 
+// Fetch JSON with graceful error handling; returns null on failure.
+async function fetchJSON(url) {
+  try {
+    const res = await fetch(url);
+    if (res.ok) return await res.json();
+  } catch (e) { /* fall through to null */ }
+  return null;
+}
+
 async function loadUpscalers() {
   const sel = $('pixel_upscaler');
   const none = sel.firstElementChild; // the empty 'none' option
   sel.innerHTML = '';
   sel.appendChild(none);
   let names = [];
-  try {
-    const res = await fetch('/upscalers');
-    if (res.ok) {
-      const data = await res.json();
-      names = (data.upscalers || []).sort();
-      upscalerScales = data.scales || {};
-      fillSelect(sel, names);
-      fillSelect($('upscaler_model'), names);
-      applyUpscalerDefaults();
-    }
-  } catch (e) { /* leave just 'none' */ }
+  const data = await fetchJSON('/upscalers');
+  if (data) {
+    names = (data.upscalers || []).sort();
+    upscalerScales = data.scales || {};
+    fillSelect(sel, names);
+    fillSelect($('upscaler_model'), names);
+    applyUpscalerDefaults();
+  }
   // No upscaler models found: block the Upscale tab, leave the Generate
   // tab's pixel-upscaler dropdown empty (refiner-only), hide the selector
   // and drop the no-refiner upscale_type option.
@@ -419,6 +424,16 @@ async function applyModelState() {
 }
 applyModelState();
 
+async function postJSON(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text() || res.statusText);
+  return await res.blob();
+}
+
 // Runs a request while the button is disabled, the overlay shown and a live
 // timer ticking; resets everything in finally and reports done/error states.
 async function runWithBusy({ btn, overlay, timerEl, timerTextEl, request, onSuccess }) {
@@ -481,13 +496,7 @@ $('generate').addEventListener('click', () => {
       const samplerVal = $('sampler').value;
       if (samplerVal) body.sampler = samplerVal;
 
-      const res = await fetch('/text2image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(await res.text() || res.statusText);
-      return await res.blob();
+      return await postJSON('/text2image', body);
     },
     onSuccess: async (blob) => {
       currentUrl = URL.createObjectURL(blob);
@@ -565,9 +574,7 @@ function updateUpscaleTabFactor() {
 function updateUpscaleTabMax() {
   const model = $('upscaler_model').value;
   const max = model ? (upscalerScales[model] || 2) : 1;
-  const slider = $('u_factor');
-  slider.max = max;
-  if (parseFloat(slider.value) > max) slider.value = max;
+  clampSlider($('u_factor'), max);
   updateUpscaleTabFactor();
 }
 
@@ -609,17 +616,11 @@ $('upscale').addEventListener('click', () => {
     timerEl: 'utimer',
     timerTextEl: 'utimer_text',
     request: async () => {
-      const res = await fetch('/upscale', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image_b64: uInputB64,
-          upscale_factor: factor,
-          pixel_upscaler: model,
-        }),
+      return await postJSON('/upscale', {
+        image_b64: uInputB64,
+        upscale_factor: factor,
+        pixel_upscaler: model,
       });
-      if (!res.ok) throw new Error(await res.text() || res.statusText);
-      return await res.blob();
     },
     onSuccess: async (blob) => {
       if (uOutUrl) URL.revokeObjectURL(uOutUrl);

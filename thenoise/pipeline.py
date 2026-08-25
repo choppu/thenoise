@@ -186,8 +186,12 @@ class PipelineController:
         )
 
         pixel_upscaler = request.pixel_upscaler
-        if pixel_upscaler:
+        if pixel_upscaler and self._pixel_upscalers.upscaler_dir:
             pixel_upscaler = self._pixel_upscalers.validate(pixel_upscaler)
+        elif pixel_upscaler:
+            # No --upscaler-dir configured: ignore the requested pixel upscaler
+            # and fall back to a refined (latent-only) upscale rather than failing.
+            pixel_upscaler = None
         upscale_factor = request.upscale_factor
         if request.upscale and upscale_factor == 1.0:
             upscale_factor = float(model.UPSCALE_SCALE)
