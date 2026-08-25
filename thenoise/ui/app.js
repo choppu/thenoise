@@ -139,8 +139,9 @@ function addRow(grid, label, value, cls) {
   grid.append(dt, dd);
 }
 
+// Render image metadata into the shared info grid (used by the info popup).
 function renderInfo(meta) {
-  const grid = $('info_grid');
+  const grid = $('info_modal_grid');
   grid.innerHTML = '';
   if (!meta || typeof meta !== 'object') {
     const dd = document.createElement('dd');
@@ -203,7 +204,7 @@ function selectHistory(i) {
   $('placeholder').style.display = 'none';
   renderInfo(item.meta);
   applySettings(item.meta);
-  $('download').disabled = false;
+  setStageActions($('download'), $('info_btn'), true);
   const items = $('history_items').querySelectorAll('.hist-item');
   items.forEach((el, idx) => el.classList.toggle('current', idx === i));
 }
@@ -251,6 +252,12 @@ function download(url, filename) {
   document.body.appendChild(a);
   a.click();
   a.remove();
+}
+
+// Toggle the download + info buttons together for a stage's image.
+function setStageActions(dlBtn, infoBtn, enabled) {
+  dlBtn.disabled = !enabled;
+  infoBtn.disabled = !enabled;
 }
 
 $('download').addEventListener('click', () => {
@@ -500,7 +507,7 @@ $('generate').addEventListener('click', () => {
     },
     onSuccess: async (blob) => {
       currentUrl = URL.createObjectURL(blob);
-      $('download').disabled = false;
+      setStageActions($('download'), $('info_btn'), true);
       $('image').src = currentUrl;
       $('image').style.display = 'block';
       $('placeholder').style.display = 'none';
@@ -520,6 +527,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
 let uInputB64 = null;      // base64 (no prefix) sent to /upscale
 let uInputDims = null;     // {w, h} of the input
 let uOutUrl = null;        // object URL of the upscaled result
+let uOutMeta = null;       // upscale metadata
 
 const dz = $('dropzone');
 const fileInput = $('file');
@@ -537,7 +545,8 @@ function loadUpscaleFile(file) {
       updateUpscaleTabFactor();
       // reset any previous result
       if (uOutUrl) { URL.revokeObjectURL(uOutUrl); uOutUrl = null; }
-      $('udownload').disabled = true;
+      uOutMeta = null;
+      setStageActions($('udownload'), $('uinfo_btn'), false);
       // show the selected image as a single image in the stage
       $('usingle_img').src = dataUrl;
       $('usingle').classList.remove('hidden');
@@ -590,7 +599,7 @@ $('upscaler_model').addEventListener('change', applyUpscalerDefaults);
 
 /* upscale info panel (reuses addRow for the dl grid) */
 function renderUpscaleInfo(meta) {
-  const grid = $('uinfo_grid');
+  const grid = $('info_modal_grid');
   grid.innerHTML = '';
   addRow(grid, 'Input resolution', uInputDims ? uInputDims.w + ' × ' + uInputDims.h : '—');
   const up = $('u_img');
@@ -631,9 +640,9 @@ $('upscale').addEventListener('click', () => {
       $('usingle').classList.add('hidden');
       $('uplaceholder').style.display = 'none';
       $('uresult').classList.remove('hidden');
-      $('udownload').disabled = false;
-      const meta = await decodeMeta(blob, 'upscale_data');
-      renderUpscaleInfo(meta);
+      setStageActions($('udownload'), $('uinfo_btn'), true);
+      uOutMeta = await decodeMeta(blob, 'upscale_data');
+      renderUpscaleInfo(uOutMeta);
     },
   });
 });
@@ -641,3 +650,18 @@ $('upscale').addEventListener('click', () => {
 $('udownload').addEventListener('click', () => {
   download(uOutUrl, 'upscaled.png');
 });
+
+/* ---------- info popup ---------- */
+function openInfo(title, render) {
+  render();
+  $('info_modal_title').textContent = title;
+  $('info_modal').classList.remove('hidden');
+}
+function closeInfo() {
+  $('info_modal').classList.add('hidden');
+}
+$('info_btn').addEventListener('click', () => openInfo('Image info', () => renderInfo(currentMeta)));
+$('uinfo_btn').addEventListener('click', () => openInfo('Upscale info', () => renderUpscaleInfo(uOutMeta)));
+$('info_modal_close').addEventListener('click', closeInfo);
+$('info_backdrop').addEventListener('click', closeInfo);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeInfo(); });

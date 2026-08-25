@@ -11,7 +11,7 @@
 <body>
 
 <div class="tabs">
-  <span class="logo">The<span class="logo-accent">Noise</span></span>
+  <img class="logo" src="static/logo.png" alt="TheNoise" title="TheNoise">
   <button class="tab ctrl active" data-tab="generate">Generate</button>
   <button class="tab ctrl" data-tab="upscale">Upscale</button>
 </div>
@@ -137,20 +137,16 @@
   <div class="stage" id="stage">
     <div class="placeholder" id="placeholder">Enter a prompt and click <span class="kbd">Generate</span></div>
     <img id="image" alt="generated" style="display:none">
-    <button class="dl ctrl" id="download" disabled title="Download PNG">&#8595; Download</button>
+    <div class="actions">
+      <button class="dl ctrl" id="download" disabled title="Download PNG">&#8595; Download</button>
+      <button class="info ctrl" id="info_btn" disabled title="Image info" aria-label="Image info">&#9432;</button>
+    </div>
     <div class="overlay hidden" id="overlay">
       <div class="spinner"></div>
     </div>
   </div>
 
   <div class="timer" id="timer"><span class="dot"></span><span id="timer_text">idle</span></div>
-
-  <details class="info" id="info">
-    <summary class="label"><span class="chev">&#9654;</span> Image info</summary>
-    <div class="info-body">
-      <dl class="info-grid" id="info_grid"></dl>
-    </div>
-  </details>
 
   <div class="history hidden" id="history">
     <div class="history-head label">History</div>
@@ -203,21 +199,29 @@
     <div class="result hidden" id="uresult">
       <img id="u_img" alt="upscaled">
     </div>
-    <button class="dl ctrl" id="udownload" disabled title="Download PNG">&#8595; Download</button>
+    <div class="actions">
+      <button class="dl ctrl" id="udownload" disabled title="Download PNG">&#8595; Download</button>
+      <button class="info ctrl" id="uinfo_btn" disabled title="Upscale info" aria-label="Upscale info">&#9432;</button>
+    </div>
     <div class="overlay hidden" id="uoverlay"><div class="spinner"></div></div>
   </div>
 
   <div class="timer" id="utimer"><span class="dot"></span><span id="utimer_text">idle</span></div>
-
-  <details class="info" id="uinfo">
-    <summary class="label"><span class="chev">&#9654;</span> Upscale info</summary>
-    <div class="info-body">
-      <dl class="info-grid" id="uinfo_grid"></dl>
-    </div>
-  </details>
 </main>
 </div><!-- /view-upscale -->
 </div><!-- /views -->
+
+<div class="modal hidden" id="info_modal">
+  <div class="backdrop" id="info_backdrop"></div>
+  <div class="modal-box">
+    <div class="modal-head">
+      <span class="modal-title" id="info_modal_title"></span>
+      <button class="modal-close" id="info_modal_close" title="Close" aria-label="Close">&#10005;</button>
+    </div>
+    <dl class="info-grid" id="info_modal_grid"></dl>
+  </div>
+</div>
+
 <script src="static/app.js"></script>
 </body>
 </html>
