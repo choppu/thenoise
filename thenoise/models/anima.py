@@ -99,6 +99,7 @@ class AnimaModel(DiffusionModel):
         negative_prompt: str = "",
         *,
         guidance_scale: float,
+        image=None,
     ) -> Conditioning:
         cond = self._encode_prompt(prompt)
         null = None

@@ -93,6 +93,7 @@ class Krea2Model(DiffusionModel):
         negative_prompt: str = "",
         *,
         guidance_scale: float,
+        image=None,
     ) -> Conditioning:
         cfg = guidance_scale > 1.0
         txt, txtmask, untxt, untxtmask = encode_prompts(

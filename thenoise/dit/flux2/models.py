@@ -26,6 +26,7 @@ from einops import rearrange
 from torch import Tensor, nn
 
 from thenoise.dit.quantized import QuantizedLinear
+from thenoise.dit.reference import concat_reference, slice_reference_output
 from thenoise.utils.attention import attention as sdpa_attention
 from thenoise.utils.setup_logging import setup_logging
 
@@ -390,8 +391,11 @@ class Flux2(nn.Module):
         ctx: Tensor,
         ctx_ids: Tensor,
         guidance: Tensor | None = None,
+        ref_tokens: Tensor | None = None,
+        ref_ids: Tensor | None = None,
     ) -> Tensor:
         num_txt_tokens = ctx.shape[1]
+        num_img_tokens = x.shape[1]
 
         timestep_emb = timestep_embedding(timesteps, 256)
         vec = self.time_in(timestep_emb)
@@ -402,6 +406,13 @@ class Flux2(nn.Module):
         double_block_mod_img = self.double_stream_modulation_img(vec)
         double_block_mod_txt = self.double_stream_modulation_txt(vec)
         single_block_mod, _ = self.single_stream_modulation(vec)
+
+        # Reference-latent editing (Flux2 Klein): prepend the reference image
+        # tokens+ids to the image stream (in packed-latent space) so the DiT
+        # attends to them alongside the text instruction. ``None`` (plain t2i)
+        # is a no-op. Must happen before ``img_in``/``pe_embedder`` so the refs
+        # are embedded like the image tokens.
+        x, x_ids = concat_reference(x, x_ids, ref_tokens, ref_ids)
 
         img = self.img_in(x)
         txt = self.txt_in(ctx)
@@ -418,7 +429,8 @@ class Flux2(nn.Module):
             img = block(img, pe, single_block_mod)
 
         img = img.to(vec.device)
-        img = img[:, num_txt_tokens:, ...]
+        img = img[:, num_txt_tokens:, ...]  # drop the text tokens
+        img = slice_reference_output(img, num_img_tokens)  # drop ref tokens
         img = self.final_layer(img, vec)
         return img
 
