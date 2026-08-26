@@ -66,6 +66,9 @@ def build_parser() -> argparse.ArgumentParser:
                           "model)")
     gen.add_argument("--prompt", required=True)
     gen.add_argument("--negative-prompt", default="")
+    gen.add_argument("--image", default="", metavar="PATH",
+                     help="input image for instruction-based editing; if given, "
+                          "runs an edit instead of text-to-image")
     gen.add_argument("--width", type=int)
     gen.add_argument("--height", type=int)
     gen.add_argument("--steps", type=int)

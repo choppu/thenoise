@@ -78,6 +78,27 @@ class UpscaleRequest(BaseModel):
     out: Literal["png", "json"] = "png"
 
 
+class EditRequest(Text2ImageRequest):
+    """Instruction-based editing: an input image + prompt -> edited image.
+
+    Adds ``image_b64`` (the image to edit) and ``ref_latents_method`` to the shared
+    text2image fields.
+    """
+
+    image_b64: str
+    ref_latents_method: str = "index"
+
+    def to_edit_request(self):
+        """Convert into a ``GenerateRequest`` carrying a decoded PIL image."""
+        from .models.config import GenerateRequest
+
+        image = Image.open(io.BytesIO(base64.b64decode(self.image_b64))).convert("RGB")
+        req: GenerateRequest = self.to_request()
+        req.image = image
+        req.ref_latents_method = self.ref_latents_method
+        return req
+
+
 def create_app(runtime) -> FastAPI:
     app = FastAPI(title="thenoise", version="0.1.0")
 
@@ -142,6 +163,31 @@ def create_app(runtime) -> FastAPI:
         except Exception as e:  # surface generation errors cleanly
             logger.exception("generation failed")
             return Response(status_code=500, content=f"generation failed: {e}")
+
+        buf = io.BytesIO()
+        image.save(buf, format="PNG", pnginfo=getattr(image, "_pnginfo", None))
+        content = buf.getvalue()
+
+        if req.out == "json":
+            return {"b64_json": base64.b64encode(content).decode("ascii")}
+        return Response(
+            content=content,
+            media_type="image/png",
+        )
+
+    @app.post("/edit")
+    def edit(req: EditRequest):
+        """Reference-latent instruction editing (image + prompt -> edited image)."""
+        pipeline = runtime.pipeline
+        if pipeline is None:
+            return Response(status_code=503, content="no model is loaded")
+        try:
+            image = pipeline.edit(req.to_edit_request())
+        except ValueError as e:  # model doesn't support editing / bad request
+            return Response(status_code=400, content=str(e))
+        except Exception as e:  # surface edit errors cleanly
+            logger.exception("edit failed")
+            return Response(status_code=500, content=f"edit failed: {e}")
 
         buf = io.BytesIO()
         image.save(buf, format="PNG", pnginfo=getattr(image, "_pnginfo", None))

@@ -16,6 +16,8 @@ import torch
 from dataclasses import dataclass
 from typing import List, Optional
 
+from PIL import Image
+
 
 @dataclass
 class ModelConfig:
@@ -58,6 +60,9 @@ class GenerateRequest:
     sharpening: float = 0.0
     lora_specs: Optional[List[str]] = None
     pixel_upscaler: Optional[str] = None
+    image: Optional[Image.Image] = None
+    # Reference-latent method (ComfyUI convention); per-model index scales are owned by the model adapter.
+    ref_latents_method: str = "index"
 
 
 @dataclass(frozen=True)

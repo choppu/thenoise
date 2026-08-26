@@ -75,7 +75,16 @@ def run_generate(args) -> None:
         lora_specs=args.lora or None,
         pixel_upscaler=pixel_upscaler,
     )
-    image = runtime.pipeline.generate(request)
+
+    # ``--image`` switches to instruction-based editing (same model, reference-
+    # latent path) instead of text-to-image.
+    if args.image:
+        from PIL import Image
+
+        request.image = Image.open(args.image).convert("RGB")
+        image = runtime.pipeline.edit(request)
+    else:
+        image = runtime.pipeline.generate(request)
 
     # If the user omitted the output extension, PIL cannot infer a format.
     # Default to PNG so a bare --out like ``out`` (or ``dir/out``) still works.

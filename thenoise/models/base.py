@@ -50,7 +50,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import torch
 from safetensors.torch import load_file
@@ -58,6 +58,9 @@ from safetensors.torch import load_file
 from thenoise.models.config import ModelConfig, SamplingParams
 from thenoise.samplers import Step
 from thenoise.upscale import load_latent_upscaler
+
+if TYPE_CHECKING:  # pragma: no cover - only for annotations
+    from PIL import Image
 from thenoise.utils.model_dir import (
     ensure_safetensors,
     resolve_in_dir,
@@ -128,6 +131,10 @@ class DiffusionModel(ABC):
     REFINE_STEPS = 1
     REFINE_DENOISE = 0.1
 
+    # Reference-latent editing capability (image + instruction -> edited image).
+    # Editing models set this True and override ``encode_reference``/``pack_reference_latent``.
+    supports_edit: bool = False
+
     @staticmethod
     @abstractmethod
     def detect(f) -> bool:
@@ -161,8 +168,13 @@ class DiffusionModel(ABC):
         negative_prompt: str = "",
         *,
         guidance_scale: float,
+        image: Optional["Image.Image"] = None,
     ) -> Conditioning:
-        """Tokenize + encode prompt (and negative) into conditioning."""
+        """Tokenize + encode prompt (and negative) into conditioning.
+
+        ``image`` is only provided in the edit path (``supports_edit`` models).
+        Multimodal encoders feed it as vision tokens in addition to any reference latent.
+        """
 
     @abstractmethod
     def init_latents(self, params: SamplingParams) -> torch.Tensor:
@@ -173,11 +185,16 @@ class DiffusionModel(ABC):
         latents: torch.Tensor,
         cond: Conditioning,
         params: SamplingParams,
+        ref: Optional[torch.Tensor] = None,
+        ref_method: str = "index",
     ) -> torch.Tensor:
         """Canonical -> model-internal latent. Runs ONCE before the loop.
 
         Override for reshaping (e.g. Krea2 patchify, Anima frame axis); default
         is the identity (canonical == internal).
+
+        ``ref``/``ref_method`` are only passed in the edit path; editing models
+        use them to stash the reference tokens+ids that ``denoise_step`` reads.
         """
         return latents
 
@@ -218,6 +235,23 @@ class DiffusionModel(ABC):
         blows up at exactly 1). Flow models override this with their shift
         the default is a linear fallback."""
         return 1.0 - percent
+
+    # ------------------------------------------------------------ editing
+    def encode_reference(self, pixels: torch.Tensor) -> torch.Tensor:
+        """Encode input pixels (``[C,H,W]`` in [-1, 1]) into the canonical latent.
+
+        Overridden by editing models (uses their VAE encoder)."""
+        raise NotImplementedError(f"{self.name} does not support reference editing")
+
+    def pack_reference_latent(
+        self,
+        latents: torch.Tensor,
+        method: str = "index",
+    ) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
+        """Canonical reference latent -> model-internal (tokens, ids).
+
+        Overridden by editing models."""
+        return None
 
     # --------------------------------------------------------------- LoRA
     def _parse_lora_spec(self, spec: str) -> Tuple[str, float]:
