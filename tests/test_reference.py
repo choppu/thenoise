@@ -27,7 +27,7 @@ from thenoise.utils.pipeline_cache import PipelineCache
 
 def test_build_reference_ids_flux2():
     # Flux2: 4 axes (t/h/w/l), index 10, not centered.
-    ids = build_reference_ids(64, 64, index=10, axes=4)
+    ids = build_reference_ids(64, 64, index=10, axes=4, device=torch.device("cpu"))
     assert ids.shape == (1, 4096, 4)
     assert ids.dtype == torch.long
     # t-axis = index for every token.
@@ -42,7 +42,7 @@ def test_build_reference_ids_flux2():
 
 def test_build_reference_ids_qwen_centered():
     # Qwen Image Edit: 3 axes, index 1, h/w centered on 0.
-    ids = build_reference_ids(32, 32, index=1, axes=3, center=True)
+    ids = build_reference_ids(32, 32, index=1, axes=3, center=True, device=torch.device("cpu"))
     assert ids.shape == (1, 1024, 3)
     assert torch.all(ids[0, :, 0] == 1)
     # Top-left token: h=0 - 16 = -16, w=0 - 16 = -16.
@@ -128,7 +128,7 @@ class _StubEditModel(DiffusionModel):
         self.encode_calls += 1
         return pixels.unsqueeze(0).float()  # [1, C, H, W]
 
-    def encode_prompt(self, prompt, negative_prompt="", *, guidance_scale, image=None):
+    def encode_prompt(self, args):
         return Conditioning(cond=torch.zeros(1, 8, 8), null=None)
 
     def init_latents(self, params):
@@ -186,3 +186,67 @@ def test_edit_rejects_unsupported_model():
     # the class flag rather than instantiating (no weights needed).
     assert not AnimaModel.supports_edit
     assert DiffusionModel.supports_edit is False
+
+
+def test_edit_derives_proportions_from_image_without_resolution():
+    """No width/height/resolution -> output keeps the input image's native size."""
+    controller = _edit_controller()
+    # 2:1 landscape image.
+    img = Image.new("RGB", (100, 50), "red")
+    request = GenerateRequest(prompt="p", image=img, seed=1)
+    controller.edit(request)
+    # edit() derives the size from the image proportions before resolving.
+    assert request.width == 100
+    assert request.height == 50
+
+
+def test_edit_resolution_pins_largest_side():
+    """--resolution pins the largest side, preserving the input aspect ratio."""
+    controller = _edit_controller()
+    img = Image.new("RGB", (100, 50), "red")  # 2:1 landscape
+    request = GenerateRequest(prompt="p", image=img, seed=1, resolution=64)
+    controller.edit(request)
+    # width = resolution (largest side), height keeps the 2:1 ratio.
+    assert request.width == 64
+    assert request.height == 32
+
+    # Portrait: largest side is height.
+    img_p = Image.new("RGB", (50, 100), "blue")
+    req_p = GenerateRequest(prompt="p", image=img_p, seed=1, resolution=64)
+    controller.edit(req_p)
+    assert req_p.width == 32
+    assert req_p.height == 64
+
+
+def test_edit_explicit_width_height_ignores_resolution():
+    """Explicit width/height override the image-derived size."""
+    controller = _edit_controller()
+    img = Image.new("RGB", (100, 50), "red")
+    request = GenerateRequest(prompt="p", image=img, seed=1,
+                              width=128, height=64)
+    controller.edit(request)
+    assert request.width == 128
+    assert request.height == 64
+
+
+def test_encode_prompt_receives_args_struct():
+    """The pipeline passes an EncodePromptArgs struct to encode_prompt."""
+    from thenoise.models.config import EncodePromptArgs
+
+    received = {}
+
+    class SpyModel(_StubEditModel):
+        def encode_prompt(self, args):
+            received["args"] = args
+            return Conditioning(cond=torch.zeros(1, 8, 8), null=None)
+
+    controller = PipelineController(SpyModel(), PixelUpscalerManager(device="cpu"))
+    img = Image.new("RGB", (64, 64), "red")
+    controller.edit(GenerateRequest(prompt="p", negative_prompt="n",
+                                    image=img, seed=1, guidance_scale=4.0))
+    args = received["args"]
+    assert isinstance(args, EncodePromptArgs)
+    assert args.prompt == "p"
+    assert args.negative_prompt == "n"
+    assert args.guidance_scale == 4.0
+    assert args.image is img

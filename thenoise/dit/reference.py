@@ -25,7 +25,7 @@ def build_reference_ids(
     index: int,
     axes: int,
     center: bool = False,
-    device: torch.device | str = "cpu",
+    device: torch.device,
 ) -> torch.Tensor:
     """Position ids for a reference latent of spatial size ``(h, w)``.
 

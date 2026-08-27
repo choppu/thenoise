@@ -264,6 +264,50 @@ def test_cli_generate_parses_lora():
     assert args.lora == ["style.safetensors:0.8", "pose.safetensors:1.0"]
 
 
+def test_cli_edit_parses_required_image_and_resolution():
+    args = build_parser().parse_args([
+        "edit",
+        "--dit", "d.safetensors",
+        "--vae", "v.safetensors",
+        "--text-encoder", "te.safetensors",
+        "--prompt", "make it sunny",
+        "--image", "in.png",
+        "--resolution", "1024",
+        "--out", "e.png",
+        "--seed", "9",
+    ])
+    assert args.command == "edit"
+    assert args.image == "in.png"
+    assert args.resolution == 1024
+    assert args.prompt == "make it sunny"
+    assert args.out == "e.png"
+    assert args.seed == 9
+
+
+def test_cli_edit_defaults_out_and_resolution():
+    args = build_parser().parse_args([
+        "edit",
+        "--dit", "d.safetensors",
+        "--vae", "v.safetensors",
+        "--text-encoder", "te.safetensors",
+        "--prompt", "x",
+        "--image", "in.png",
+    ])
+    assert args.out == "out_edit.png"
+    assert args.resolution is None
+
+
+def test_cli_edit_requires_image():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([
+            "edit",
+            "--dit", "d.safetensors",
+            "--vae", "v.safetensors",
+            "--text-encoder", "te.safetensors",
+            "--prompt", "x",
+        ])
+
+
 def test_out_defaults_to_png_when_no_extension():
     """A bare --out with no extension gets .png appended before save."""
     from thenoise.utils.paths import ensure_png_extension

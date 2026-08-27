@@ -55,7 +55,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 import torch
 from safetensors.torch import load_file
 
-from thenoise.models.config import ModelConfig, SamplingParams
+from thenoise.models.config import EncodePromptArgs, ModelConfig, SamplingParams
 from thenoise.samplers import Step
 from thenoise.upscale import load_latent_upscaler
 
@@ -162,18 +162,13 @@ class DiffusionModel(ABC):
 
     # ------------------------------------------------------------------ hooks
     @abstractmethod
-    def encode_prompt(
-        self,
-        prompt: str,
-        negative_prompt: str = "",
-        *,
-        guidance_scale: float,
-        image: Optional["Image.Image"] = None,
-    ) -> Conditioning:
+    def encode_prompt(self, args: EncodePromptArgs) -> Conditioning:
         """Tokenize + encode prompt (and negative) into conditioning.
 
-        ``image`` is only provided in the edit path (``supports_edit`` models).
-        Multimodal encoders feed it as vision tokens in addition to any reference latent.
+        Accepts a single ``EncodePromptArgs`` struct (prompt, negative_prompt,
+        guidance_scale, image) so new knobs never change the signature. ``image``
+        is only set in the edit path (``supports_edit`` models); multimodal
+        encoders feed it as vision tokens in addition to any reference latent.
         """
 
     @abstractmethod

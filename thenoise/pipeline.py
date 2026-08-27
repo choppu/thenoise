@@ -48,7 +48,7 @@ from PIL import Image
 
 from thenoise.locks import inference_lock
 from thenoise.models.base import DiffusionModel, Conditioning
-from thenoise.models.config import GenerateRequest, SamplingParams
+from thenoise.models.config import EncodePromptArgs, GenerateRequest, SamplingParams
 from thenoise.samplers import create_sampler
 from thenoise.samplers.euler import EulerSampler
 from thenoise.upscale.pixel import PixelUpscalerManager
@@ -218,6 +218,23 @@ class PipelineController:
         if request.image is None:
             raise ValueError("edit requires an input image")
 
+        # Derive the output size from the input image's aspect ratio when neither
+        # width nor height is given. ``resolution`` (optional) pins the largest
+        # side; without it the image's native size is kept, so the result matches
+        # the input proportions instead of defaulting to a 1:1 square.
+        if request.width is None and request.height is None:
+            iw, ih = request.image.size
+            if request.resolution is not None:
+                if iw >= ih:
+                    w = request.resolution
+                    h = round(ih * request.resolution / iw)
+                else:
+                    h = request.resolution
+                    w = round(iw * request.resolution / ih)
+            else:
+                w, h = iw, ih
+            request.width, request.height = w, h
+
         r = self._resolve_pipeline(request)
         ref_key = self._cache_key_reference(request.image)
         return self._finalize(
@@ -273,9 +290,12 @@ class PipelineController:
                 cond = self._cache.prompt_get()
             else:
                 cond = model.encode_prompt(
-                    request.prompt, request.negative_prompt,
-                    guidance_scale=r.guidance_scale,
-                    image=request.image if is_edit else None,
+                    EncodePromptArgs(
+                        prompt=request.prompt,
+                        negative_prompt=request.negative_prompt,
+                        guidance_scale=r.guidance_scale,
+                        image=request.image if is_edit else None,
+                    )
                 )
                 self._cache.prompt_store(prompt_key, cond)
 

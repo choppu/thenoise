@@ -29,7 +29,7 @@ from thenoise.dit.flux2.utils import (
     load_qwen3_embedder,
 )
 from thenoise.models.base import Conditioning, DiffusionModel, Step, normalize_keys
-from thenoise.models.config import ModelConfig, SamplingParams
+from thenoise.models.config import EncodePromptArgs, ModelConfig, SamplingParams
 from thenoise.utils.math import round_up
 from thenoise.vae import load_flux2_vae
 
@@ -111,22 +111,18 @@ class FluxKleinModel(DiffusionModel):
     # ------------------------------------------------------------ kernels
     def encode_prompt(
         self,
-        prompt: str,
-        negative_prompt: str = "",
-        *,
-        guidance_scale: float,
-        image=None,
+        args: EncodePromptArgs,
     ) -> Conditioning:
         """Encode the edit instruction (text-only for Flux2 Klein).
 
-        ``image`` is accepted for the shared edit pipeline but unused here — the
-        input image is fed to the DiT purely as a reference latent, never into the
+        ``args.image`` is accepted for the shared edit pipeline but unused here —
+        the input image is fed to the DiT purely as a reference latent, never into the
         text encoder (unlike Qwen Image Edit).
         """
-        cond = self.text_encoder(prompt)  # [1, 512, ctx_dim]
+        cond = self.text_encoder(args.prompt)  # [1, 512, ctx_dim]
         null = None
-        if guidance_scale > 1.0:
-            null = self.text_encoder(negative_prompt)
+        if args.guidance_scale > 1.0:
+            null = self.text_encoder(args.negative_prompt)
         return Conditioning(cond=cond, null=null)
 
     def init_latents(self, params: SamplingParams) -> torch.Tensor:
