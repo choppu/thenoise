@@ -81,11 +81,9 @@ class UpscaleRequest(BaseModel):
 
 
 class EditRequest(Text2ImageRequest):
-    """Instruction-based editing: input image(s) + prompt -> edited image.
+    """Instruction-based editing: image(s) + prompt -> edited image.
 
-    Adds ``image`` (one or more base64-encoded images to edit) and
-    ``ref_latents_method`` to the shared text2image fields. ``image`` accepts a
-    single base64 string or a list of them.
+    ``image`` accepts one or more base64-encoded images (OpenAI-style).
     """
 
     image: Union[str, List[str]]
@@ -101,8 +99,7 @@ class EditRequest(Text2ImageRequest):
             for b in b64_list
         ]
         req: GenerateRequest = self.to_request()
-        # OpenAI ``/v1/images/edits``-style: ``image`` is one or more images;
-        # store it as a single element when one is given, else as the list.
+        # OpenAI-style: ``image`` is one or more images; store single or list.
         req.image = images[0] if len(images) == 1 else images
         req.ref_latents_method = self.ref_latents_method
         return req

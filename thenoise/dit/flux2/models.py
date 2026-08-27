@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Callable
 
 import torch
 from einops import rearrange
@@ -240,7 +241,6 @@ class SingleStreamBlock(nn.Module):
         self.pre_norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.mlp_act = SiLUActivation()
 
-    @torch.compile(fullgraph=True, dynamic=True)
     def forward(self, x: Tensor, pe: Tensor, mod: tuple[Tensor, Tensor]) -> Tensor:
         mod_shift, mod_scale, mod_gate = mod
         x_mod = (1 + mod_scale) * self.pre_norm(x) + mod_shift
@@ -285,7 +285,6 @@ class DoubleStreamBlock(nn.Module):
             QuantizedLinear(mlp_hidden_dim, hidden_size, bias=False),
         )
 
-    @torch.compile(fullgraph=True, dynamic=True)
     def forward(
         self,
         img: Tensor,
@@ -375,6 +374,20 @@ class Flux2(nn.Module):
         self.num_double_blocks = len(self.double_blocks)
         self.num_single_blocks = len(self.single_blocks)
 
+        # Per-block compiled-forward cache: ``(block_id, dynamic)``. t2i compiles
+        # static (fixed shape); edit (variable ref count) compiles dynamic to
+        # avoid Inductor's recompile/`CantSplit` failure on the grown sequence.
+        self._compiled_blocks: dict[tuple[int, bool], Callable] = {}
+
+    def _compile_block(self, block: nn.Module, dynamic: bool) -> Callable:
+        """Cached ``torch.compile``d forward for ``block`` (one per (block, dynamic))."""
+        key = (id(block), dynamic)
+        fn = self._compiled_blocks.get(key)
+        if fn is None:
+            fn = torch.compile(block.forward, fullgraph=True, dynamic=dynamic)
+            self._compiled_blocks[key] = fn
+        return fn
+
     @property
     def device(self):
         return next(self.parameters()).device
@@ -419,14 +432,20 @@ class Flux2(nn.Module):
         pe_x = self.pe_embedder(x_ids)
         pe_ctx = self.pe_embedder(ctx_ids)
 
+        # Edit varies seq length (ref tokens prepended), so compile blocks
+        # dynamically there; t2i keeps static-specialized kernels.
+        dynamic = ref_tokens is not None or ref_ids is not None
+
         for block in self.double_blocks:
-            img, txt = block(img, txt, pe_x, pe_ctx, double_block_mod_img, double_block_mod_txt)
+            fwd = self._compile_block(block, dynamic)
+            img, txt = fwd(img, txt, pe_x, pe_ctx, double_block_mod_img, double_block_mod_txt)
 
         img = torch.cat((txt, img), dim=1)
         pe = torch.cat((pe_ctx, pe_x), dim=2)
 
         for block in self.single_blocks:
-            img = block(img, pe, single_block_mod)
+            fwd = self._compile_block(block, dynamic)
+            img = fwd(img, pe, single_block_mod)
 
         img = img.to(vec.device)
         img = img[:, num_txt_tokens:, ...]  # drop the text tokens

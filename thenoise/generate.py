@@ -136,9 +136,7 @@ def run_edit(args) -> None:
 
     from PIL import Image
 
-    # ``--image`` is repeatable; the first image determines the output aspect
-    # ratio / resolution, the rest are additional reference images. Stored as a
-    # list on ``request.image`` (single-or-list, OpenAI-style).
+    # ``--image`` is repeatable; first sets aspect/resolution, rest are refs.
     request.image = [Image.open(p).convert("RGB") for p in args.image]
     image = runtime.pipeline.edit(request)
 

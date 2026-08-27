@@ -147,10 +147,8 @@ class PipelineController:
     ) -> Tuple:
         """Cache key for the encoded reference latent(s) (edit path).
 
-        Hashes each image's RGB pixel bytes (in order) and includes the target
-        resolution, because reference images are resized/center-cropped to the
-        working size before encoding — a different target size yields different
-        refs even for the same source images.
+        Hashes each image's RGB bytes (in order) plus the target size, since
+        refs are resize/center-cropped to the working resolution.
         """
         digests = tuple(
             hashlib.md5(img.convert("RGB").tobytes()).hexdigest() for img in images
@@ -228,10 +226,9 @@ class PipelineController:
         if not images:
             raise ValueError("edit requires an input image")
 
-        # Derive the output size from the FIRST image's aspect ratio when neither
-        # width nor height is given. ``resolution`` (optional) pins the largest
-        # side; without it the image's native size is kept, so the result matches
-        # the input proportions instead of defaulting to a 1:1 square.
+        # Derive size from the FIRST image's aspect ratio unless width/height given.
+        # ``resolution`` pins the largest side; otherwise keep the native size
+        # (so the result matches the input proportions, not a 1:1 square).
         if request.width is None and request.height is None:
             iw, ih = images[0].size
             if request.resolution is not None:
@@ -254,11 +251,7 @@ class PipelineController:
         )
 
     def _edit_images(self, request: GenerateRequest) -> list[Image.Image]:
-        """Normalize the request's ``image`` (single OR list) to a list.
-
-        ``image`` may be one PIL image or a list of them; returns ``[]`` when no
-        image is given.
-        """
+        """Normalize ``request.image`` (single OR list) to a list ([] if none)."""
         image = request.image
         if image is None:
             return []
@@ -306,8 +299,8 @@ class PipelineController:
                 else:
                     ref_latents = []
                     for img in self._edit_images(request):
-                        # ComfyUI-style: scale each reference to cover the working
-                        # resolution (center-crop if the aspect ratio differs).
+                        # ComfyUI-style: scale each ref to cover the working size
+                        # (center-crop if the aspect ratio differs).
                         cover = resize_to_cover_center_crop(img, r.width, r.height)
                         pixels = pil_to_pixels(cover)  # [C,H,W] fp32 [-1,1]
                         ref_latents.append(model.encode_reference(pixels))  # [1,C,H,W]

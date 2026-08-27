@@ -163,9 +163,8 @@ class FluxKleinModel(DiffusionModel):
             self._un_txt = self._un_txt_ids = None
 
         if ref is not None:
-            # Multiple reference images: pack each with a successive t-axis index
-            # (REF_INDEX, 2*REF_INDEX, ...) per ComfyUI's reference-latent scheme,
-            # then concatenate all ref tokens+ids into one stream for the DiT.
+            # Pack each ref with a successive t-axis index (REF_INDEX, 2x, ...)
+            # per ComfyUI, then concat all ref tokens+ids into one stream.
             ref_tokens, ref_ids = [], []
             for i, ref_latent in enumerate(ref):
                 t, ids = self.pack_reference_latent(ref_latent, ref_method, ref_index=i + 1)
@@ -231,14 +230,10 @@ class FluxKleinModel(DiffusionModel):
         method: str = "index",
         ref_index: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Canonical reference latent -> (tokens, ids) in DiT token space.
+        """Canonical reference latent -> (tokens, ids), t-axis = REF_INDEX*ref_index.
 
-        Uses the Flux2 "index" method: ``prc_img`` with the t-axis set to
-        ``REF_INDEX * ref_index`` (1-based position among the reference images),
-        matching ComfyUI's ``ref_index_scale``. The first reference uses
-        ``REF_INDEX`` (10); the second ``2*REF_INDEX`` (20), and so on. The
-        reference tokens/ids are concatenated to the image stream inside
-        ``Flux2.forward``.
+        ``ref_index`` is the 1-based position (ComfyUI ``ref_index_scale``): the
+        first ref uses 10, the second 20, etc.
         """
         dev = torch.device(self.device)
         index = self.REF_INDEX * ref_index

@@ -50,13 +50,9 @@ def center_crop(image: Image.Image, width: int, height: int) -> Image.Image:
 def resize_to_cover_center_crop(
     image: Image.Image, width: int, height: int
 ) -> Image.Image:
-    """ComfyUI-style reference resize: scale to cover ``(width, height)``, then
-    center-crop the excess.
+    """ComfyUI-style ref resize: scale to cover ``(width, height)``, center-crop.
 
-    Used for reference-latent images: each reference is scaled (keeping its
-    aspect ratio) so it fills the target frame, then cropped to exactly the
-    target dimensions. Images that already match the target aspect ratio are
-    only resized. ComfyUI does not pad.
+    Images matching the target aspect ratio are only resized; ComfyUI does not pad.
     """
     if (image.width, image.height) == (width, height):
         return image
