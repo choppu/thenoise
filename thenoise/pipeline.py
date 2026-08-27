@@ -66,6 +66,11 @@ from thenoise.postprocess.rcas import rcas
 from thenoise.utils.png import build_pnginfo
 
 
+# Largest side used for the edit output size when neither width nor height is
+# given; the first reference image's aspect ratio is preserved.
+_EDIT_DEFAULT_SIZE = 1024
+
+
 @dataclass(frozen=True)
 class _ResolvedRequest:
     """Resolved pipeline values shared by ``generate`` and ``edit``.
@@ -227,19 +232,17 @@ class PipelineController:
             raise ValueError("edit requires an input image")
 
         # Derive size from the FIRST image's aspect ratio unless width/height given.
-        # ``resolution`` pins the largest side; otherwise keep the native size
-        # (so the result matches the input proportions, not a 1:1 square).
+        # Without explicit width/height the first reference is resized to
+        # ``_EDIT_DEFAULT_SIZE`` (1024) on its largest side, aspect preserved.
         if request.width is None and request.height is None:
             iw, ih = images[0].size
-            if request.resolution is not None:
-                if iw >= ih:
-                    w = request.resolution
-                    h = round(ih * request.resolution / iw)
-                else:
-                    h = request.resolution
-                    w = round(iw * request.resolution / ih)
+            target = _EDIT_DEFAULT_SIZE
+            if iw >= ih:
+                w = target
+                h = round(ih * target / iw)
             else:
-                w, h = iw, ih
+                h = target
+                w = round(iw * target / ih)
             request.width, request.height = w, h
 
         r = self._resolve_pipeline(request)

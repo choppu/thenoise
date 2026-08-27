@@ -45,7 +45,6 @@ class Text2ImageRequest(BaseModel):
     sharpening: float = 0.0
     lora_specs: Optional[List[str]] = None  # ["filename.safetensors:0.8", ...]
     pixel_upscaler: Optional[str] = None  # name (no .safetensors) in upscaler_dir
-    resolution: Optional[int] = None  # edit: desired resolution on the largest side
     out: Literal["png", "json"] = "png"
 
     def to_request(self):
@@ -69,7 +68,6 @@ class Text2ImageRequest(BaseModel):
             sharpening=self.sharpening,
             lora_specs=self.lora_specs,
             pixel_upscaler=self.pixel_upscaler,
-            resolution=self.resolution,
         )
 
 

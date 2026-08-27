@@ -6,7 +6,7 @@ here (when not given) so it can be reported for reproducibility.
 
 ``run_generate`` handles text-to-image (and, via ``--image``, one-shot editing).
 ``run_edit`` is the dedicated edit entrypoint, always going through
-``pipeline.edit`` with the input image + optional ``--resolution``.
+``pipeline.edit`` with the input image(s).
 """
 from __future__ import annotations
 
@@ -108,7 +108,6 @@ def run_edit(args) -> None:
     """
     _check_dim("width", args.width)
     _check_dim("height", args.height)
-    _check_dim("resolution", args.resolution)
 
     from .models.config import GenerateRequest
     runtime, pixel_upscaler = _build_runtime(args)
@@ -131,12 +130,11 @@ def run_edit(args) -> None:
         sharpening=args.sharpening,
         lora_specs=args.lora or None,
         pixel_upscaler=pixel_upscaler,
-        resolution=args.resolution,
     )
 
     from PIL import Image
 
-    # ``--image`` is repeatable; first sets aspect/resolution, rest are refs.
+    # ``--image`` is repeatable; first sets aspect/size, rest are refs.
     request.image = [Image.open(p).convert("RGB") for p in args.image]
     image = runtime.pipeline.edit(request)
 

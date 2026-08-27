@@ -264,7 +264,7 @@ def test_cli_generate_parses_lora():
     assert args.lora == ["style.safetensors:0.8", "pose.safetensors:1.0"]
 
 
-def test_cli_edit_parses_required_image_and_resolution():
+def test_cli_edit_parses_required_image_and_width_height():
     args = build_parser().parse_args([
         "edit",
         "--dit", "d.safetensors",
@@ -272,19 +272,21 @@ def test_cli_edit_parses_required_image_and_resolution():
         "--text-encoder", "te.safetensors",
         "--prompt", "make it sunny",
         "--image", "in.png",
-        "--resolution", "1024",
+        "--width", "1024",
+        "--height", "512",
         "--out", "e.png",
         "--seed", "9",
     ])
     assert args.command == "edit"
     assert args.image == ["in.png"]
-    assert args.resolution == 1024
+    assert args.width == 1024
+    assert args.height == 512
     assert args.prompt == "make it sunny"
     assert args.out == "e.png"
     assert args.seed == 9
 
 
-def test_cli_edit_defaults_out_and_resolution():
+def test_cli_edit_defaults_out_and_width_height():
     args = build_parser().parse_args([
         "edit",
         "--dit", "d.safetensors",
@@ -294,7 +296,8 @@ def test_cli_edit_defaults_out_and_resolution():
         "--image", "in.png",
     ])
     assert args.out == "out_edit.png"
-    assert args.resolution is None
+    assert args.width is None
+    assert args.height is None
 
 
 def test_cli_edit_requires_image():

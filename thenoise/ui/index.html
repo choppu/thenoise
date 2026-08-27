@@ -185,11 +185,21 @@
 
   <div class="divider"></div>
 
-  <div class="field">
-    <label class="label" for="edit_resolution">Output resolution <span class="hint">largest side</span></label>
-    <input type="number" id="edit_resolution" min="1" max="4096" placeholder="auto">
-    <span class="hint">The first reference image sets the aspect ratio; leave empty to keep its size.</span>
+  <div class="swap-row">
+    <div class="field">
+      <label class="label" for="edit_width">Width</label>
+      <input type="number" id="edit_width" placeholder="auto" value="">
+      <span class="hint">Max 4096</span>
+    </div>
+    <button class="swap ctrl" id="eswap" title="Swap width and height"
+      aria-label="Swap width and height">&#8646;</button>
+    <div class="field">
+      <label class="label" for="edit_height">Height</label>
+      <input type="number" id="edit_height" placeholder="auto" value="">
+      <span class="hint">Max 4096</span>
+    </div>
   </div>
+  <span class="hint">Leave empty to resize the first reference image to 1024 on its largest side (aspect preserved).</span>
 
   <div class="row">
     <div class="field">

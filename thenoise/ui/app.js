@@ -74,18 +74,22 @@ function updateUpscaleMax(prefix) {
 $('width').addEventListener('input', () => updateFinalRes(''));
 $('height').addEventListener('input', () => updateFinalRes(''));
 
-// ---- edit: output size derived from the first reference image + resolution ----
+// ---- edit: output size from width/height, else resize first ref to 1024 ----
 let editRefs = []; // {dataUrl, b64, dims:{w,h}, name}
+
+const EDIT_DEFAULT_SIZE = 1024; // largest side when no width/height given
 
 function editTargetDims() {
   if (!editRefs.length) return null;
   const { w: iw, h: ih } = editRefs[0].dims;
-  const res = parseInt($('edit_resolution').value, 10);
-  if (res) {
-    if (iw >= ih) return { w: res, h: Math.round(ih * res / iw) };
-    return { w: Math.round(iw * res / ih), h: res };
-  }
-  return { w: iw, h: ih };
+  const ew = parseInt($('edit_width').value, 10);
+  const eh = parseInt($('edit_height').value, 10);
+  if (ew && eh) return { w: ew, h: eh };
+  if (ew) return { w: ew, h: ih };
+  if (eh) return { w: iw, h: eh };
+  // No width/height: resize the first reference to 1024, aspect preserved.
+  if (iw >= ih) return { w: EDIT_DEFAULT_SIZE, h: Math.round(ih * EDIT_DEFAULT_SIZE / iw) };
+  return { w: Math.round(iw * EDIT_DEFAULT_SIZE / ih), h: EDIT_DEFAULT_SIZE };
 }
 
 function updateEditFinalRes() {
@@ -93,7 +97,8 @@ function updateEditFinalRes() {
   const factor = parseFloat($('edit_upscale_factor').value) || 1;
   renderRes($('edit_final_res'), d && d.w, d && d.h, factor);
 }
-$('edit_resolution').addEventListener('input', updateEditFinalRes);
+$('edit_width').addEventListener('input', updateEditFinalRes);
+$('edit_height').addEventListener('input', updateEditFinalRes);
 
 function setTimer(elId, textId, state, text) {
   $(elId).className = 'timer ' + state;
@@ -267,6 +272,12 @@ function applySettings(meta) {
 $('swap').addEventListener('click', () => {
   const w = $('width'), h = $('height');
   const tmp = w.value; w.value = h.value; h.value = tmp;
+});
+
+$('eswap').addEventListener('click', () => {
+  const w = $('edit_width'), h = $('edit_height');
+  const tmp = w.value; w.value = h.value; h.value = tmp;
+  updateEditFinalRes();
 });
 
 function download(url, filename) {
@@ -732,7 +743,7 @@ function renderEditRefs() {
   editRefs.forEach((r, i) => {
     const div = document.createElement('div');
     div.className = 'ref-thumb' + (i === 0 ? ' first' : '');
-    div.title = r.name + (i === 0 ? ' (sets aspect ratio / resolution)' : '');
+    div.title = r.name + (i === 0 ? ' (sets output size)' : '');
     const img = document.createElement('img');
     img.src = r.dataUrl;
     img.alt = 'reference ' + (i + 1);
@@ -759,7 +770,9 @@ function renderEditRefs() {
 }
 
 function resetEditResult() {
-  if (eOutUrl) { URL.revokeObjectURL(eOutUrl); eOutUrl = null; }
+  // Do NOT revoke eOutUrl: it may still be referenced by an entry in eHistory.
+  // History entries are revoked only when they are evicted (>10) or replaced.
+  eOutUrl = null;
   eOutMeta = null;
   setStageActions($('edownload'), $('einfo_btn'), false);
   $('e_img').style.display = 'none';
@@ -808,7 +821,7 @@ function addEditToHistory(url, meta) {
 function selectEditHistory(i) {
   const item = eHistory[i];
   if (!item) return;
-  if (eOutUrl) URL.revokeObjectURL(eOutUrl);
+  // Don't revoke the previous eOutUrl: it lives on as an entry in eHistory.
   eOutUrl = item.url;
   eOutMeta = item.meta;
   $('e_img').src = item.url;
@@ -823,10 +836,12 @@ function selectEditHistory(i) {
 $('edit_btn').addEventListener('click', () => {
   const MAX_DIM = 4096;
   if (editRefs.length === 0) return;
-  const res = $('edit_resolution').value;
-  if (res !== '' && (res < 1 || res > MAX_DIM)) {
-    alert(`error: resolution must be between 1 and ${MAX_DIM} (got ${res}).`);
-    return;
+  for (const f of ['edit_width', 'edit_height']) {
+    const v = $(f).value === '' ? null : parseInt($(f).value, 10);
+    if (v !== null && (v < 0 || v > MAX_DIM)) {
+      alert(`error: ${f.slice(5)} must be between 0 and ${MAX_DIM} (got ${v}).`);
+      return;
+    }
   }
 
   runWithBusy({
@@ -848,7 +863,7 @@ $('edit_btn').addEventListener('click', () => {
         sharpening: parseFloat($('edit_sharpening').value),
         lora_specs: parseLora($('edit_lora_specs').value),
       };
-      for (const f of ['resolution', 'steps', 'seed']) {
+      for (const f of ['width', 'height', 'steps', 'seed']) {
         const v = $('edit_' + f).value;
         if (v !== '') body[f] = parseInt(v, 10);
       }
@@ -859,7 +874,7 @@ $('edit_btn').addEventListener('click', () => {
       return await postJSON('/edit', body);
     },
     onSuccess: async (blob) => {
-      if (eOutUrl) URL.revokeObjectURL(eOutUrl);
+      // Don't revoke the previous eOutUrl: it is kept as an entry in eHistory.
       eOutUrl = URL.createObjectURL(blob);
       $('e_img').src = eOutUrl;
       $('e_img').style.display = 'block';

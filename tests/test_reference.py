@@ -188,37 +188,28 @@ def test_edit_rejects_unsupported_model():
     assert DiffusionModel.supports_edit is False
 
 
-def test_edit_derives_proportions_from_image_without_resolution():
-    """No width/height/resolution -> output keeps the input image's native size."""
+def test_edit_derives_size_from_image_resized_to_1024():
+    """No width/height -> first image resized to 1024 on its largest side."""
     controller = _edit_controller()
-    # 2:1 landscape image.
+    # 2:1 landscape image -> largest side 1024, height 512.
     img = Image.new("RGB", (100, 50), "red")
     request = GenerateRequest(prompt="p", image=img, seed=1)
     controller.edit(request)
-    # edit() derives the size from the image proportions before resolving.
-    assert request.width == 100
-    assert request.height == 50
+    assert request.width == 1024
+    assert request.height == 512
 
 
-def test_edit_resolution_pins_largest_side():
-    """--resolution pins the largest side, preserving the input aspect ratio."""
+def test_edit_derives_size_from_image_portrait():
+    """Portrait image: largest side (height) resized to 1024."""
     controller = _edit_controller()
-    img = Image.new("RGB", (100, 50), "red")  # 2:1 landscape
-    request = GenerateRequest(prompt="p", image=img, seed=1, resolution=64)
+    img = Image.new("RGB", (50, 100), "blue")  # 1:2 portrait
+    request = GenerateRequest(prompt="p", image=img, seed=1)
     controller.edit(request)
-    # width = resolution (largest side), height keeps the 2:1 ratio.
-    assert request.width == 64
-    assert request.height == 32
-
-    # Portrait: largest side is height.
-    img_p = Image.new("RGB", (50, 100), "blue")
-    req_p = GenerateRequest(prompt="p", image=img_p, seed=1, resolution=64)
-    controller.edit(req_p)
-    assert req_p.width == 32
-    assert req_p.height == 64
+    assert request.width == 512
+    assert request.height == 1024
 
 
-def test_edit_explicit_width_height_ignores_resolution():
+def test_edit_explicit_width_height_are_used():
     """Explicit width/height override the image-derived size."""
     controller = _edit_controller()
     img = Image.new("RGB", (100, 50), "red")
@@ -256,16 +247,15 @@ def test_encode_prompt_receives_args_struct():
 
 
 def test_multi_edit_derives_size_from_first_image():
-    """Output resolution/aspect derive from the FIRST reference image."""
+    """Output resolution/aspect derive from the FIRST reference image (to 1024)."""
     controller = _edit_controller()
     first = Image.new("RGB", (100, 50), "red")   # 2:1 landscape
     second = Image.new("RGB", (50, 100), "blue")  # portrait (ignored for size)
-    request = GenerateRequest(prompt="p", image=[first, second], seed=1,
-                              resolution=64)
+    request = GenerateRequest(prompt="p", image=[first, second], seed=1)
     controller.edit(request)
-    # Largest side from the first image's aspect ratio (2:1 landscape).
-    assert request.width == 64
-    assert request.height == 32
+    # Largest side from the first image's aspect ratio (2:1 landscape) -> 1024.
+    assert request.width == 1024
+    assert request.height == 512
 
 
 def test_multi_edit_encodes_each_reference_once():

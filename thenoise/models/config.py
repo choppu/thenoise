@@ -82,9 +82,6 @@ class GenerateRequest:
     image: Optional[Union[Image.Image, List[Image.Image]]] = None
     # Reference-latent method (ComfyUI convention); per-model index scales are owned by the model adapter.
     ref_latents_method: str = "index"
-    # Desired resolution on the largest side for image editing; if None the
-    # result keeps the input image's aspect ratio (its native size).
-    resolution: Optional[int] = None
 
 
 @dataclass(frozen=True)
