@@ -116,8 +116,10 @@ def build_parser() -> argparse.ArgumentParser:
                                         "(image + prompt -> edited image)")
     _add_model_paths(edit)
     _add_generation_args(edit, out_default="out_edit.png")
-    edit.add_argument("--image", required=True, metavar="PATH",
-                      help="input image to edit (single reference image)")
+    edit.add_argument("--image", action="append", required=True, metavar="PATH",
+                      help="input image(s) to edit; repeatable for multiple "
+                           "reference images (aspect ratio + resolution derive "
+                           "from the first)")
     edit.add_argument("--resolution", type=int, metavar="PX",
                       help="desired resolution on the largest side; without it "
                            "the result keeps the input image's proportions")

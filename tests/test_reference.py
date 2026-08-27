@@ -250,3 +250,50 @@ def test_encode_prompt_receives_args_struct():
     assert args.negative_prompt == "n"
     assert args.guidance_scale == 4.0
     assert args.image is img
+
+
+# ------------------------------------------------------------- multi-image
+
+
+def test_multi_edit_derives_size_from_first_image():
+    """Output resolution/aspect derive from the FIRST reference image."""
+    controller = _edit_controller()
+    first = Image.new("RGB", (100, 50), "red")   # 2:1 landscape
+    second = Image.new("RGB", (50, 100), "blue")  # portrait (ignored for size)
+    request = GenerateRequest(prompt="p", image=[first, second], seed=1,
+                              resolution=64)
+    controller.edit(request)
+    # Largest side from the first image's aspect ratio (2:1 landscape).
+    assert request.width == 64
+    assert request.height == 32
+
+
+def test_multi_edit_encodes_each_reference_once():
+    """Each distinct ref image is VAE-encoded once (cached by content hash)."""
+    controller = _edit_controller()
+    img_a = Image.new("RGB", (64, 64), "red")
+    img_b = Image.new("RGB", (64, 64), "blue")
+
+    controller.edit(GenerateRequest(prompt="p1", image=[img_a, img_b], seed=1))
+    assert controller.model.encode_calls == 2
+
+    # Same two images, different prompt -> refs reused (no re-encode).
+    controller.edit(GenerateRequest(prompt="p2", image=[img_a, img_b], seed=2))
+    assert controller.model.encode_calls == 2
+
+    # Reordering the refs changes the reference -> re-encode.
+    controller.edit(GenerateRequest(prompt="p3", image=[img_b, img_a], seed=3))
+    assert controller.model.encode_calls == 4
+
+
+def test_multi_edit_single_image_equals_one_element_list():
+    """A bare single image and a one-element list are equivalent (both cache-hit)."""
+    controller = _edit_controller()
+    img = Image.new("RGB", (64, 64), "red")
+
+    controller.edit(GenerateRequest(prompt="p1", image=img, seed=1))
+    assert controller.model.encode_calls == 1
+
+    # Same image as a one-element list -> cache hit (no re-encode).
+    controller.edit(GenerateRequest(prompt="p2", image=[img], seed=2))
+    assert controller.model.encode_calls == 1

@@ -240,7 +240,7 @@ class SingleStreamBlock(nn.Module):
         self.pre_norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.mlp_act = SiLUActivation()
 
-    @torch.compile(fullgraph=True)
+    @torch.compile(fullgraph=True, dynamic=True)
     def forward(self, x: Tensor, pe: Tensor, mod: tuple[Tensor, Tensor]) -> Tensor:
         mod_shift, mod_scale, mod_gate = mod
         x_mod = (1 + mod_scale) * self.pre_norm(x) + mod_shift
@@ -285,7 +285,7 @@ class DoubleStreamBlock(nn.Module):
             QuantizedLinear(mlp_hidden_dim, hidden_size, bias=False),
         )
 
-    @torch.compile(fullgraph=True)
+    @torch.compile(fullgraph=True, dynamic=True)
     def forward(
         self,
         img: Tensor,

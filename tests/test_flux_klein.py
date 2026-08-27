@@ -195,6 +195,41 @@ def test_flux2_reference_ids_via_prc_img_t_coord():
     assert torch.all(ids[0, :, 0] == 10)
 
 
+def test_pack_reference_latent_successive_index():
+    """Multi-ref packing assigns successive t-axes (10, 20, ...) per ComfyUI."""
+    from thenoise.dit.flux2.sampling import prc_img
+
+    ref = torch.randn(1, 8, 4, 4)
+    # First ref -> index 10, second -> 20 (REF_INDEX * position).
+    _, ids1 = prc_img(ref, t_coord=torch.tensor([10]))
+    _, ids2 = prc_img(ref, t_coord=torch.tensor([20]))
+    assert torch.all(ids1[0, :, 0] == 10)
+    assert torch.all(ids2[0, :, 0] == 20)
+    # Concatenated along the token dimension keeps both refs distinct.
+    cat = torch.cat([ids1, ids2], dim=1)
+    assert cat.shape == (1, 32, 4)
+
+
+def test_resize_to_cover_center_crop_keeps_target_size():
+    """ComfyUI-style ref resize: cover the target, center-crop; no padding."""
+    from PIL import Image
+    from thenoise.utils.image_tensor import resize_to_cover_center_crop
+
+    # Wide source into a square target: scale height to 100, width overflows, crop.
+    img = Image.new("RGB", (200, 50), "red")
+    out = resize_to_cover_center_crop(img, 100, 100)
+    assert out.size == (100, 100)
+
+    # Same aspect ratio: only resized, no crop.
+    img2 = Image.new("RGB", (200, 100), "blue")
+    out2 = resize_to_cover_center_crop(img2, 100, 50)
+    assert out2.size == (100, 50)
+
+    # Already at target size: returned unchanged.
+    img3 = Image.new("RGB", (64, 64), "green")
+    assert resize_to_cover_center_crop(img3, 64, 64) is img3
+
+
 def test_flux2_forward_with_reference_tokens():
     """Flux2 forward consumes ref tokens+ids and slices them off the output."""
     torch.manual_seed(0)

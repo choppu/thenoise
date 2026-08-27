@@ -15,7 +15,7 @@ import logging
 import mimetypes
 import os
 import base64
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Union
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, Response
@@ -81,22 +81,29 @@ class UpscaleRequest(BaseModel):
 
 
 class EditRequest(Text2ImageRequest):
-    """Instruction-based editing: an input image + prompt -> edited image.
+    """Instruction-based editing: input image(s) + prompt -> edited image.
 
-    Adds ``image_b64`` (the image to edit) and ``ref_latents_method`` to the shared
-    text2image fields.
+    Adds ``image`` (one or more base64-encoded images to edit) and
+    ``ref_latents_method`` to the shared text2image fields. ``image`` accepts a
+    single base64 string or a list of them.
     """
 
-    image_b64: str
+    image: Union[str, List[str]]
     ref_latents_method: str = "index"
 
     def to_edit_request(self):
-        """Convert into a ``GenerateRequest`` carrying a decoded PIL image."""
+        """Convert into a ``GenerateRequest`` carrying decoded PIL images."""
         from .models.config import GenerateRequest
 
-        image = Image.open(io.BytesIO(base64.b64decode(self.image_b64))).convert("RGB")
+        b64_list = self.image if isinstance(self.image, list) else [self.image]
+        images = [
+            Image.open(io.BytesIO(base64.b64decode(b))).convert("RGB")
+            for b in b64_list
+        ]
         req: GenerateRequest = self.to_request()
-        req.image = image
+        # OpenAI ``/v1/images/edits``-style: ``image`` is one or more images;
+        # store it as a single element when one is given, else as the list.
+        req.image = images[0] if len(images) == 1 else images
         req.ref_latents_method = self.ref_latents_method
         return req
 

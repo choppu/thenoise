@@ -163,7 +163,16 @@ class FluxKleinModel(DiffusionModel):
             self._un_txt = self._un_txt_ids = None
 
         if ref is not None:
-            self._ref_tokens, self._ref_ids = self.pack_reference_latent(ref, ref_method)
+            # Multiple reference images: pack each with a successive t-axis index
+            # (REF_INDEX, 2*REF_INDEX, ...) per ComfyUI's reference-latent scheme,
+            # then concatenate all ref tokens+ids into one stream for the DiT.
+            ref_tokens, ref_ids = [], []
+            for i, ref_latent in enumerate(ref):
+                t, ids = self.pack_reference_latent(ref_latent, ref_method, ref_index=i + 1)
+                ref_tokens.append(t)
+                ref_ids.append(ids)
+            self._ref_tokens = torch.cat(ref_tokens, dim=1)
+            self._ref_ids = torch.cat(ref_ids, dim=1)
         else:
             self._ref_tokens = self._ref_ids = None
 
@@ -220,15 +229,19 @@ class FluxKleinModel(DiffusionModel):
         self,
         latents: torch.Tensor,
         method: str = "index",
+        ref_index: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Canonical reference latent -> (tokens, ids) in DiT token space.
 
         Uses the Flux2 "index" method: ``prc_img`` with the t-axis set to
-        ``REF_INDEX`` (10), matching ComfyUI's ``ref_index_scale``. The reference
-        tokens/ids are concatenated to the image stream inside ``Flux2.forward``.
+        ``REF_INDEX * ref_index`` (1-based position among the reference images),
+        matching ComfyUI's ``ref_index_scale``. The first reference uses
+        ``REF_INDEX`` (10); the second ``2*REF_INDEX`` (20), and so on. The
+        reference tokens/ids are concatenated to the image stream inside
+        ``Flux2.forward``.
         """
         dev = torch.device(self.device)
-        index = self.REF_INDEX
+        index = self.REF_INDEX * ref_index
         return prc_img(
             latents.to(device=dev, dtype=self.dtype),
             t_coord=torch.tensor([index], device=dev),

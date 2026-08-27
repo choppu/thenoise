@@ -242,10 +242,12 @@ class DiffusionModel(ABC):
         self,
         latents: torch.Tensor,
         method: str = "index",
+        ref_index: int = 1,
     ) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
         """Canonical reference latent -> model-internal (tokens, ids).
 
-        Overridden by editing models."""
+        ``ref_index`` is the 1-based position among the reference images (used to
+        give each ref a distinct t-axis index). Overridden by editing models."""
         return None
 
     # --------------------------------------------------------------- LoRA

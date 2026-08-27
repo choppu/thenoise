@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import torch
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from PIL import Image
 
@@ -77,7 +77,10 @@ class GenerateRequest:
     sharpening: float = 0.0
     lora_specs: Optional[List[str]] = None
     pixel_upscaler: Optional[str] = None
-    image: Optional[Image.Image] = None
+    # Reference image(s) for instruction editing. Accepts a single image OR a
+    # list of images (OpenAI ``/v1/images/edits``-style); the pipeline normalizes
+    # to an array. The FIRST image determines the output aspect ratio / resolution.
+    image: Optional[Union[Image.Image, List[Image.Image]]] = None
     # Reference-latent method (ComfyUI convention); per-model index scales are owned by the model adapter.
     ref_latents_method: str = "index"
     # Desired resolution on the largest side for image editing; if None the

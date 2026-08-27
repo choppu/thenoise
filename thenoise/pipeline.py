@@ -58,6 +58,7 @@ from thenoise.utils.image_tensor import (
     pil_to_pixels,
     pixels_to_pil,
     resize_to_target,
+    resize_to_cover_center_crop,
 )
 from thenoise.postprocess.film_grain import film_grain
 from thenoise.postprocess.nyquist import nyquist_notch
@@ -138,15 +139,23 @@ class PipelineController:
             return ("prompt",) + base
         return ("prompt_edit",) + base + (ref_key,)
 
-    def _cache_key_reference(self, image: Image.Image) -> Tuple:
-        """Cache key for the encoded reference latent (edit path).
+    def _cache_key_reference(
+        self,
+        images: list[Image.Image],
+        width: int,
+        height: int,
+    ) -> Tuple:
+        """Cache key for the encoded reference latent(s) (edit path).
 
-        Hashes the RGB pixel bytes so re-editing the same image (with any
-        prompt) reuses the VAE encode.
+        Hashes each image's RGB pixel bytes (in order) and includes the target
+        resolution, because reference images are resized/center-cropped to the
+        working size before encoding — a different target size yields different
+        refs even for the same source images.
         """
-        rgb = image.convert("RGB")
-        digest = hashlib.md5(rgb.tobytes()).hexdigest()
-        return ("reference", rgb.size, digest)
+        digests = tuple(
+            hashlib.md5(img.convert("RGB").tobytes()).hexdigest() for img in images
+        )
+        return ("reference", width, height, digests)
 
     def _cache_key_sampling(
         self,
@@ -215,15 +224,16 @@ class PipelineController:
         model = self.model
         if not model.supports_edit:
             raise ValueError(f"model '{model.name}' does not support image editing")
-        if request.image is None:
+        images = self._edit_images(request)
+        if not images:
             raise ValueError("edit requires an input image")
 
-        # Derive the output size from the input image's aspect ratio when neither
+        # Derive the output size from the FIRST image's aspect ratio when neither
         # width nor height is given. ``resolution`` (optional) pins the largest
         # side; without it the image's native size is kept, so the result matches
         # the input proportions instead of defaulting to a 1:1 square.
         if request.width is None and request.height is None:
-            iw, ih = request.image.size
+            iw, ih = images[0].size
             if request.resolution is not None:
                 if iw >= ih:
                     w = request.resolution
@@ -236,12 +246,25 @@ class PipelineController:
             request.width, request.height = w, h
 
         r = self._resolve_pipeline(request)
-        ref_key = self._cache_key_reference(request.image)
+        ref_key = self._cache_key_reference(images, r.width, r.height)
         return self._finalize(
             self._run(request, r, ref_key=ref_key,
                        ref_method=request.ref_latents_method),
             request, r,
         )
+
+    def _edit_images(self, request: GenerateRequest) -> list[Image.Image]:
+        """Normalize the request's ``image`` (single OR list) to a list.
+
+        ``image`` may be one PIL image or a list of them; returns ``[]`` when no
+        image is given.
+        """
+        image = request.image
+        if image is None:
+            return []
+        if isinstance(image, list):
+            return list(image)
+        return [image]
 
     def _run(
         self,
@@ -276,13 +299,18 @@ class PipelineController:
             model.switch_loras(request.lora_specs, model.dit)
 
             # Stage 0: reference (image) latent — deterministic per image (edit).
-            ref_latents: Optional[torch.Tensor] = None
+            ref_latents: Optional[list[torch.Tensor]] = None
             if is_edit:
                 if self._cache.reference_hit(ref_key):
                     ref_latents = self._cache.reference_get()
                 else:
-                    pixels = pil_to_pixels(request.image)  # [C,H,W] fp32 [-1,1]
-                    ref_latents = model.encode_reference(pixels)  # [1,C,H,W]
+                    ref_latents = []
+                    for img in self._edit_images(request):
+                        # ComfyUI-style: scale each reference to cover the working
+                        # resolution (center-crop if the aspect ratio differs).
+                        cover = resize_to_cover_center_crop(img, r.width, r.height)
+                        pixels = pil_to_pixels(cover)  # [C,H,W] fp32 [-1,1]
+                        ref_latents.append(model.encode_reference(pixels))  # [1,C,H,W]
                     self._cache.reference_store(ref_key, ref_latents)
 
             # Stage 1: prompt conditioning (image-aware for multimodal encoders).
@@ -329,7 +357,7 @@ class PipelineController:
         self,
         cond: Conditioning,
         params: SamplingParams,
-        ref_latents: Optional[torch.Tensor] = None,
+        ref_latents: Optional[list[torch.Tensor]] = None,
         ref_method: str = "index",
     ) -> torch.Tensor:
         """Shared denoising pipeline over the model's ``schedule``.

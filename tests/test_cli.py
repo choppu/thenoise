@@ -277,7 +277,7 @@ def test_cli_edit_parses_required_image_and_resolution():
         "--seed", "9",
     ])
     assert args.command == "edit"
-    assert args.image == "in.png"
+    assert args.image == ["in.png"]
     assert args.resolution == 1024
     assert args.prompt == "make it sunny"
     assert args.out == "e.png"
