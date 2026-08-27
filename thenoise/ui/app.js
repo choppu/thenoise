@@ -10,6 +10,8 @@ function bindRange(sliderId, valId, digits = 2) {
 }
 bindRange('film_grain', 'film_grain_val');
 bindRange('sharpening', 'sharpening_val');
+bindRange('edit_film_grain', 'edit_film_grain_val');
+bindRange('edit_sharpening', 'edit_sharpening_val');
 
 // Set a slider's value and mirror it in its companion label.
 function setRange(sliderId, valId, value, digits = 2) {
@@ -28,10 +30,6 @@ function clampSlider(slider, max) {
 
 const LATENT_SCALE = 2; // latent refiner multiplier
 
-function updateFactorVal() {
-  rangeLabel('upscale_factor', 'upscale_factor_val');
-}
-
 // Render "W × H px" for dims scaled by `factor` into resEl; clear when dims unknown.
 function renderRes(resEl, w, h, factor) {
   resEl.textContent = (w && h)
@@ -40,7 +38,8 @@ function renderRes(resEl, w, h, factor) {
 }
 
 // Show the final output resolution (base width/height x factor) under the slider.
-function updateFinalRes() {
+function updateFinalRes(prefix) {
+  if (prefix === 'edit_') { updateEditFinalRes(); return; }
   const w = parseInt($('width').value, 10);
   const h = parseInt($('height').value, 10);
   const factor = parseFloat($('upscale_factor').value) || 1;
@@ -51,24 +50,50 @@ function updateFinalRes() {
 //   refined    -> 2x (latent refiner) * pixel scale
 //   no-refiner -> pixel scale only
 // With no pixel upscaler, refined caps at the latent 2x and no-refiner at 1x.
-function updateUpscaleMax() {
-  const slider = $('upscale_factor');
-  const type = $('upscale_type').value;
-  const name = $('pixel_upscaler').value;
+function updateUpscaleMax(prefix) {
+  const slider = $(prefix + 'upscale_factor');
+  const type = $(prefix + 'upscale_type').value;
+  const name = $(prefix + 'pixel_upscaler').value;
   const scale = name ? (upscalerScales[name] || 2) : 0;
   const max = type === 'no-refiner'
     ? (scale || 1)
     : (scale ? LATENT_SCALE * scale : LATENT_SCALE);
   clampSlider(slider, max);
-  updateFactorVal();
-  updateFinalRes();
+  rangeLabel(prefix + 'upscale_factor', prefix + 'upscale_factor_val');
+  updateFinalRes(prefix);
 }
 
-$('upscale_type').addEventListener('change', updateUpscaleMax);
-$('pixel_upscaler').addEventListener('change', updateUpscaleMax);
-$('upscale_factor').addEventListener('input', () => { updateFactorVal(); updateFinalRes(); });
-$('width').addEventListener('input', updateFinalRes);
-$('height').addEventListener('input', updateFinalRes);
+['', 'edit_'].forEach(p => {
+  $(p + 'upscale_type').addEventListener('change', () => updateUpscaleMax(p));
+  $(p + 'pixel_upscaler').addEventListener('change', () => updateUpscaleMax(p));
+  $(p + 'upscale_factor').addEventListener('input', () => {
+    rangeLabel(p + 'upscale_factor', p + 'upscale_factor_val');
+    updateFinalRes(p);
+  });
+});
+$('width').addEventListener('input', () => updateFinalRes(''));
+$('height').addEventListener('input', () => updateFinalRes(''));
+
+// ---- edit: output size derived from the first reference image + resolution ----
+let editRefs = []; // {dataUrl, b64, dims:{w,h}, name}
+
+function editTargetDims() {
+  if (!editRefs.length) return null;
+  const { w: iw, h: ih } = editRefs[0].dims;
+  const res = parseInt($('edit_resolution').value, 10);
+  if (res) {
+    if (iw >= ih) return { w: res, h: Math.round(ih * res / iw) };
+    return { w: Math.round(iw * res / ih), h: res };
+  }
+  return { w: iw, h: ih };
+}
+
+function updateEditFinalRes() {
+  const d = editTargetDims();
+  const factor = parseFloat($('edit_upscale_factor').value) || 1;
+  renderRes($('edit_final_res'), d && d.w, d && d.h, factor);
+}
+$('edit_resolution').addEventListener('input', updateEditFinalRes);
 
 function setTimer(elId, textId, state, text) {
   $(elId).className = 'timer ' + state;
@@ -236,7 +261,7 @@ function applySettings(meta) {
   if (meta.pixel_upscaler) {
     $('pixel_upscaler').value = meta.pixel_upscaler;
   }
-  updateUpscaleMax();
+  updateUpscaleMax('');
 }
 
 $('swap').addEventListener('click', () => {
@@ -294,127 +319,140 @@ async function fetchJSON(url) {
 }
 
 async function loadUpscalers() {
-  const sel = $('pixel_upscaler');
-  const none = sel.firstElementChild; // the empty 'none' option
-  sel.innerHTML = '';
-  sel.appendChild(none);
   let names = [];
   const data = await fetchJSON('/upscalers');
   if (data) {
     names = (data.upscalers || []).sort();
     upscalerScales = data.scales || {};
-    fillSelect(sel, names);
-    fillSelect($('upscaler_model'), names);
-    applyUpscalerDefaults();
   }
-  // No upscaler models found: block the Upscale tab, leave the Generate
-  // tab's pixel-upscaler dropdown empty (refiner-only), hide the selector
-  // and drop the no-refiner upscale_type option.
-  const noRefiner = $('no_refiner_opt');
+  // Fill the generate + edit pixel-upscaler dropdowns (keep their 'none' option first).
+  for (const p of ['', 'edit_']) {
+    const sel = $(p + 'pixel_upscaler');
+    const none = sel.firstElementChild;
+    sel.innerHTML = '';
+    sel.appendChild(none);
+    fillSelect(sel, names);
+  }
+  fillSelect($('upscaler_model'), names);
+  applyUpscalerDefaults();
+  // No upscaler models found: block the Upscale tab, leave the Generate/Edit
+  // pixel-upscaler dropdowns empty (refiner-only), hide the selectors and drop
+  // the no-refiner upscale_type option.
   const noUpscalers = names.length === 0;
   $('no_upscaler').classList.toggle('hidden', !noUpscalers);
-  $('pixel_upscaler_field').classList.toggle('hidden', noUpscalers);
-  if (noUpscalers) {
-    if (noRefiner.parentElement) noRefiner.remove();
-    if ($('upscale_type').value === 'no-refiner') $('upscale_type').value = 'refined';
-  } else {
-    $('upscale_type').appendChild(noRefiner);
-  }
-  updateUpscaleMax();
-}
-
-const acEl = () => $('lora_ac');
-
-function openAc() { acEl().classList.add('open'); }
-function closeAc() { acEl().classList.remove('open'); acEl().innerHTML = ''; }
-
-function tokenAtCursor(ta) {
-  const s = ta.selectionStart;
-  const before = ta.value.slice(0, s);
-  const nl = before.lastIndexOf('\n');
-  const lineStart = nl === -1 ? 0 : nl + 1;
-  const sp = before.lastIndexOf(' ');
-  const tokenStart = sp > lineStart ? sp + 1 : lineStart;
-  return { token: ta.value.slice(tokenStart, s).trim(), tokenStart };
-}
-
-function insertLora(name, tokenStart) {
-  const ta = $('lora_specs');
-  const s = ta.selectionStart;
-  ta.value = ta.value.slice(0, tokenStart) + name + ta.value.slice(s);
-  const pos = tokenStart + name.length;
-  ta.setSelectionRange(pos, pos);
-  ta.focus();
-}
-
-function renderAc(items, tokenStart) {
-  const ac = acEl();
-  ac.innerHTML = '';
-  if (!items.length) {
-    const d = document.createElement('div');
-    d.className = 'empty';
-    d.textContent = 'No matching LoRAs';
-    ac.appendChild(d);
-    openAc();
-    return;
-  }
-  items.forEach(name => {
-    const d = document.createElement('div');
-    d.className = 'item';
-    d.dataset.name = name;
-    d.dataset.tokenStart = tokenStart;
-    d.textContent = name;
-    ac.appendChild(d);
-  });
-  openAc();
-}
-
-$('lora_specs').addEventListener('input', () => {
-  const ta = $('lora_specs');
-  const { token, tokenStart } = tokenAtCursor(ta);
-  if (token.length < 2) { closeAc(); return; }
-  const q = token.toLowerCase();
-  renderAc(loras.filter(n => n.toLowerCase().includes(q)), tokenStart);
-});
-
-acEl().addEventListener('mousedown', e => {
-  const item = e.target.closest('.item');
-  if (!item) return;
-  e.preventDefault();
-  insertLora(item.dataset.name, parseInt(item.dataset.tokenStart, 10));
-  closeAc();
-});
-
-$('lora_specs').addEventListener('keydown', e => {
-  if (!acEl().classList.contains('open')) return;
-  if (e.key === 'Escape') { closeAc(); return; }
-  const items = acEl().querySelectorAll('.item');
-  if (!items.length) return;
-  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-    e.preventDefault();
-    let idx = -1;
-    items.forEach((it, i) => { if (it.classList.contains('sel')) idx = i; });
-    idx = e.key === 'ArrowDown'
-      ? (idx + 1) % items.length
-      : (idx === -1 ? items.length - 1 : (idx - 1 + items.length) % items.length);
-    items.forEach((it, i) => it.classList.toggle('sel', i === idx));
-  } else if (e.key === 'Enter' || e.key === 'Tab') {
-    const sel = acEl().querySelector('.item.sel');
-    if (sel) {
-      e.preventDefault();
-      insertLora(sel.dataset.name, parseInt(sel.dataset.tokenStart, 10));
-      closeAc();
+  for (const p of ['', 'edit_']) {
+    $(p + 'pixel_upscaler_field').classList.toggle('hidden', noUpscalers);
+    const noRefiner = $(p + 'no_refiner_opt');
+    if (noUpscalers) {
+      if (noRefiner.parentElement) noRefiner.remove();
+      if ($(p + 'upscale_type').value === 'no-refiner') $(p + 'upscale_type').value = 'refined';
+    } else if (!$(p + 'upscale_type').contains(noRefiner)) {
+      $(p + 'upscale_type').appendChild(noRefiner);
     }
   }
-});
+  updateUpscaleMax('');
+  updateUpscaleMax('edit_');
+}
 
+function initLora(prefix) {
+  const specs = () => $(prefix + 'lora_specs');
+  const ac = () => $(prefix + 'lora_ac');
+
+  function openAc() { ac().classList.add('open'); }
+  function closeAc() { ac().classList.remove('open'); ac().innerHTML = ''; }
+
+  function tokenAtCursor(ta) {
+    const s = ta.selectionStart;
+    const before = ta.value.slice(0, s);
+    const nl = before.lastIndexOf('\n');
+    const lineStart = nl === -1 ? 0 : nl + 1;
+    const sp = before.lastIndexOf(' ');
+    const tokenStart = sp > lineStart ? sp + 1 : lineStart;
+    return { token: ta.value.slice(tokenStart, s).trim(), tokenStart };
+  }
+
+  function insertLora(name, tokenStart) {
+    const s = specs().selectionStart;
+    specs().value = specs().value.slice(0, tokenStart) + name + specs().value.slice(s);
+    const pos = tokenStart + name.length;
+    specs().setSelectionRange(pos, pos);
+    specs().focus();
+  }
+
+  function renderAc(items, tokenStart) {
+    ac().innerHTML = '';
+    if (!items.length) {
+      const d = document.createElement('div');
+      d.className = 'empty';
+      d.textContent = 'No matching LoRAs';
+      ac().appendChild(d);
+      openAc();
+      return;
+    }
+    items.forEach(name => {
+      const d = document.createElement('div');
+      d.className = 'item';
+      d.dataset.name = name;
+      d.dataset.tokenStart = tokenStart;
+      d.textContent = name;
+      ac().appendChild(d);
+    });
+    openAc();
+  }
+
+  specs().addEventListener('input', () => {
+    const { token, tokenStart } = tokenAtCursor(specs());
+    if (token.length < 2) { closeAc(); return; }
+    const q = token.toLowerCase();
+    renderAc(loras.filter(n => n.toLowerCase().includes(q)), tokenStart);
+  });
+
+  ac().addEventListener('mousedown', e => {
+    const item = e.target.closest('.item');
+    if (!item) return;
+    e.preventDefault();
+    insertLora(item.dataset.name, parseInt(item.dataset.tokenStart, 10));
+    closeAc();
+  });
+
+  specs().addEventListener('keydown', e => {
+    if (!ac().classList.contains('open')) return;
+    if (e.key === 'Escape') { closeAc(); return; }
+    const items = ac().querySelectorAll('.item');
+    if (!items.length) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      let idx = -1;
+      items.forEach((it, i) => { if (it.classList.contains('sel')) idx = i; });
+      idx = e.key === 'ArrowDown'
+        ? (idx + 1) % items.length
+        : (idx === -1 ? items.length - 1 : (idx - 1 + items.length) % items.length);
+      items.forEach((it, i) => it.classList.toggle('sel', i === idx));
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      const sel = ac().querySelector('.item.sel');
+      if (sel) {
+        e.preventDefault();
+        insertLora(sel.dataset.name, parseInt(sel.dataset.tokenStart, 10));
+        closeAc();
+      }
+    }
+  });
+}
+
+initLora('');
+initLora('edit_');
+
+// A single shared click-to-close for both lora autocompletes.
 document.addEventListener('click', e => {
-  if (!e.target.closest('.lora-field')) closeAc();
+  if (!e.target.closest('.lora-field')) {
+    document.querySelectorAll('.lora-ac.open').forEach(a => a.classList.remove('open'));
+  }
 });
 
 loadLoras();
 loadUpscalers();
-updateUpscaleMax();
+updateUpscaleMax('');
+updateUpscaleMax('edit_');
 
 // If the server is running without a loaded model, show a notice on the
 // Generate tab explaining that it is unavailable (Upscale stays usable).
@@ -428,6 +466,7 @@ async function applyModelState() {
     }
   } catch (e) { /* assume a model is present on network errors */ }
   $('no_model').classList.toggle('hidden', hasModel);
+  $('edit_no_model').classList.toggle('hidden', hasModel);
 }
 applyModelState();
 
@@ -651,6 +690,193 @@ $('udownload').addEventListener('click', () => {
   download(uOutUrl, 'upscaled.png');
 });
 
+/* ---------- edit workflow ---------- */
+let eOutUrl = null;      // object URL of the edited result
+let eOutMeta = null;     // edit metadata
+let eHistory = [];       // newest first, capped at 10: {url, meta, time}
+
+const edz = $('edit_dropzone');
+const efileInput = $('edit_file');
+
+function parseLora(value) {
+  return value.trim()
+    ? value.split('\n').map(l => l.trim()).filter(Boolean)
+    : null;
+}
+
+// Add the given FileList's images to editRefs (decode each to base64 + dims).
+function addEditRefs(files) {
+  [...files].filter(f => f.type.startsWith('image/')).forEach(file => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      const img = new Image();
+      img.onload = () => {
+        editRefs.push({
+          dataUrl, b64: dataUrl.split(',')[1],
+          dims: { w: img.naturalWidth, h: img.naturalHeight }, name: file.name,
+        });
+        renderEditRefs();
+        resetEditResult();
+        updateEditFinalRes();
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderEditRefs() {
+  const box = $('edit_refs');
+  box.innerHTML = '';
+  editRefs.forEach((r, i) => {
+    const div = document.createElement('div');
+    div.className = 'ref-thumb' + (i === 0 ? ' first' : '');
+    div.title = r.name + (i === 0 ? ' (sets aspect ratio / resolution)' : '');
+    const img = document.createElement('img');
+    img.src = r.dataUrl;
+    img.alt = 'reference ' + (i + 1);
+    div.appendChild(img);
+    const rm = document.createElement('button');
+    rm.className = 'ref-remove';
+    rm.textContent = '\u00d7';
+    rm.title = 'Remove';
+    rm.addEventListener('click', () => {
+      editRefs.splice(i, 1);
+      renderEditRefs();
+      resetEditResult();
+      updateEditFinalRes();
+    });
+    div.appendChild(rm);
+    if (i === 0) {
+      const badge = document.createElement('span');
+      badge.className = 'first-badge';
+      badge.textContent = '1st';
+      div.appendChild(badge);
+    }
+    box.appendChild(div);
+  });
+}
+
+function resetEditResult() {
+  if (eOutUrl) { URL.revokeObjectURL(eOutUrl); eOutUrl = null; }
+  eOutMeta = null;
+  setStageActions($('edownload'), $('einfo_btn'), false);
+  $('e_img').style.display = 'none';
+  $('eplaceholder').style.display = 'block';
+  $('edit_btn').disabled = editRefs.length === 0;
+}
+
+edz.addEventListener('click', () => efileInput.click());
+efileInput.addEventListener('change', e => addEditRefs(e.target.files));
+edz.addEventListener('dragover', e => { e.preventDefault(); edz.classList.add('over'); });
+edz.addEventListener('dragleave', () => edz.classList.remove('over'));
+edz.addEventListener('drop', e => {
+  e.preventDefault(); edz.classList.remove('over');
+  addEditRefs(e.dataTransfer.files);
+});
+
+function renderEditHistory() {
+  const container = $('ehistory_items');
+  container.innerHTML = '';
+  eHistory.forEach((item, i) => {
+    const div = document.createElement('div');
+    div.className = 'hist-item' + (i === 0 ? ' current' : '');
+    const img = document.createElement('img');
+    img.src = item.url;
+    img.alt = 'edit ' + (i + 1);
+    div.appendChild(img);
+    const seed = document.createElement('span');
+    seed.className = 'hist-seed';
+    seed.textContent = item.meta && item.meta.seed != null ? item.meta.seed : '';
+    div.appendChild(seed);
+    div.addEventListener('click', () => selectEditHistory(i));
+    container.appendChild(div);
+  });
+  $('ehistory').classList.toggle('hidden', eHistory.length === 0);
+}
+
+function addEditToHistory(url, meta) {
+  eHistory.unshift({ url, meta, time: Date.now() });
+  if (eHistory.length > 10) {
+    const removed = eHistory.pop();
+    if (removed.url) URL.revokeObjectURL(removed.url);
+  }
+  renderEditHistory();
+}
+
+function selectEditHistory(i) {
+  const item = eHistory[i];
+  if (!item) return;
+  if (eOutUrl) URL.revokeObjectURL(eOutUrl);
+  eOutUrl = item.url;
+  eOutMeta = item.meta;
+  $('e_img').src = item.url;
+  $('e_img').style.display = 'block';
+  $('eplaceholder').style.display = 'none';
+  renderInfo(item.meta);
+  setStageActions($('edownload'), $('einfo_btn'), true);
+  const items = $('ehistory_items').querySelectorAll('.hist-item');
+  items.forEach((el, idx) => el.classList.toggle('current', idx === i));
+}
+
+$('edit_btn').addEventListener('click', () => {
+  const MAX_DIM = 4096;
+  if (editRefs.length === 0) return;
+  const res = $('edit_resolution').value;
+  if (res !== '' && (res < 1 || res > MAX_DIM)) {
+    alert(`error: resolution must be between 1 and ${MAX_DIM} (got ${res}).`);
+    return;
+  }
+
+  runWithBusy({
+    btn: $('edit_btn'),
+    overlay: $('eoverlay'),
+    timerEl: 'etimer',
+    timerTextEl: 'etimer_text',
+    request: async () => {
+      const body = {
+        prompt: $('edit_prompt').value,
+        negative_prompt: $('edit_negative_prompt').value,
+        // OpenAI-style: one image -> a string, many -> an array.
+        image: editRefs.length === 1 ? editRefs[0].b64 : editRefs.map(r => r.b64),
+        upscale_factor: parseFloat($('edit_upscale_factor').value),
+        upscale_type: $('edit_upscale_type').value,
+        pixel_upscaler: $('edit_pixel_upscaler').value || null,
+        qwen_vae_enhance: $('edit_qwen_vae_enhance').checked,
+        film_grain: parseFloat($('edit_film_grain').value),
+        sharpening: parseFloat($('edit_sharpening').value),
+        lora_specs: parseLora($('edit_lora_specs').value),
+      };
+      for (const f of ['resolution', 'steps', 'seed']) {
+        const v = $('edit_' + f).value;
+        if (v !== '') body[f] = parseInt(v, 10);
+      }
+      const g = $('edit_guidance_scale').value;
+      if (g !== '') body.guidance_scale = parseFloat(g);
+      const samplerVal = $('edit_sampler').value;
+      if (samplerVal) body.sampler = samplerVal;
+      return await postJSON('/edit', body);
+    },
+    onSuccess: async (blob) => {
+      if (eOutUrl) URL.revokeObjectURL(eOutUrl);
+      eOutUrl = URL.createObjectURL(blob);
+      $('e_img').src = eOutUrl;
+      $('e_img').style.display = 'block';
+      $('eplaceholder').style.display = 'none';
+      setStageActions($('edownload'), $('einfo_btn'), true);
+      eOutMeta = await decodeMeta(blob, 'generation_data');
+      renderInfo(eOutMeta);
+      addEditToHistory(eOutUrl, eOutMeta);
+    },
+  });
+});
+
+$('edownload').addEventListener('click', () => {
+  const seed = eOutMeta && eOutMeta.seed != null ? eOutMeta.seed : 'x';
+  download(eOutUrl, `thenoise_edit_${seed}.png`);
+});
+
 /* ---------- info popup ---------- */
 function openInfo(title, render) {
   render();
@@ -662,6 +888,7 @@ function closeInfo() {
 }
 $('info_btn').addEventListener('click', () => openInfo('Image info', () => renderInfo(currentMeta)));
 $('uinfo_btn').addEventListener('click', () => openInfo('Upscale info', () => renderUpscaleInfo(uOutMeta)));
+$('einfo_btn').addEventListener('click', () => openInfo('Edit info', () => renderInfo(eOutMeta)));
 $('info_modal_close').addEventListener('click', closeInfo);
 $('info_backdrop').addEventListener('click', closeInfo);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeInfo(); });
