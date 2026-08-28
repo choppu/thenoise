@@ -2,7 +2,7 @@
 
 A text-to-image diffusion inference engine. Tested on Strix Halo, Strix Point and Krackan Point.
 
-Loads one model at a time and generates images from text prompts. Available as a CLI tool, an HTTP API (with a simple web UI).
+Loads one model at a time and generates images from text prompts. Editing-capable models can also edit existing images from a text instruction (image + prompt → edited image). Available as a CLI tool, an HTTP API (with a simple web UI).
 
 <img width="2048" height="1070" alt="thenoise-screenshot" src="https://github.com/user-attachments/assets/5731e570-efb2-43b5-8f71-b6d11d57c8aa" />
 
@@ -189,8 +189,10 @@ in the project venv created by [Setup](#setup) — a bare `python` will not work
 | Krea 2 | ~35 GB | Higher quality; much larger text encoder and DiT |
 | Z-Image-Turbo | ~21 GB | Distilled 8-step S3-DiT; Flux VAE + Qwen3 caption encoder |
 | Z-Image | ~21 GB | Non-distilled version of Z-Image-Turbo |
-| Flux.2 Klein 4B | ~12 GB | Distilled 4-step flow MMDiT; Flux.2 VAE + Qwen3-4B |
-| Flux.2 Klein 9B | ~25 GB | Distilled 4-step flow MMDiT; Flux.2 VAE + Qwen3-8B |
+| Flux.2 Klein 4B | ~12 GB | Distilled 4-step flow MMDiT; Flux.2 VAE + Qwen3-4B; **supports editing** |
+| Flux.2 Klein 9B | ~25 GB | Distilled 4-step flow MMDiT; Flux.2 VAE + Qwen3-8B; **supports editing** |
+
+Only Flux.2 Klein supports [image editing](#editing) (`supports_edit`); the other models are text-to-image only.
 
 ### Krea 2
 
@@ -275,12 +277,13 @@ selectable via `--sampler er_sde`.
 
 ## Operation Modes
 
-TheNoise can be used in four ways:
+TheNoise can be used in several ways:
 
-1. **CLI** — generate a single image from the command line
-2. **CLI `upscale`** — pixel-upscale an existing image (no diffusion model needed)
-3. **HTTP server** — serve a model over HTTP with a JSON API
-4. **Web UI** — a very basic browser interface served at `http://localhost:8000/` when running the server
+1. **CLI `generate`** — generate a single image from the command line (or, with `--image`, edit one)
+2. **CLI `edit`** — edit an existing image from an instruction (image + prompt → edited image)
+3. **CLI `upscale`** — pixel-upscale an existing image (no diffusion model needed)
+4. **HTTP server** — serve a model over HTTP with a JSON API (text-to-image, editing, upscaling)
+5. **Web UI** — a very basic browser interface served at `http://localhost:8000/` when running the server
 
 The model type is **auto-detected** from the DiT checkpoint — no need to specify which model you are using.
 
@@ -308,6 +311,16 @@ The max factor follows the detected upscaler scale. For a 4× Real-ESRGAN model:
 ```
 
 The downloaded `RealESRGAN_x4plus.safetensors` goes into an `--upscaler-dir` (serve) or is passed by full path via `--pixel-upscaler` (generate/upscale).
+
+---
+
+## Editing
+
+Editing-capable models can edit an existing image from a text instruction: **image + prompt → edited image**.
+
+Editing is a **model** capability (`supports_edit`). At the moment only Flux.2 Klein supports it.
+
+You may provide one or many reference images. Without an explicit `width`/`height`, the **first** reference image is resized to 1024 on its largest side (aspect preserved) and sets the output size; the rest are used as additional references.
 
 ## CLI
 
@@ -354,6 +367,20 @@ Then open `http://localhost:8000/` for the web UI.
   --out /tmp/fox.png
 ```
 
+### Edit an image
+
+ `--image` is repeatable — the first image sets the output size, the rest are additional references:
+
+```bash
+./thenoise.sh edit \
+  --dit ./models/klein/split_files/diffusion_models/flux-2-klein-4b.safetensors \
+  --vae ./models/klein/split_files/vae/flux2-vae.safetensors \
+  --text-encoder ./models/klein/split_files/text_encoders/qwen_3_4b.safetensors \
+  --image /tmp/fox.png \
+  --prompt "a fox wearing a red scarf" --steps 4 --sampler euler \
+  --out /tmp/fox_edited.png
+```
+
 ### Upscale a single image
 
 ```bash
@@ -393,6 +420,7 @@ LoRA format is `filename:weight` — the `.safetensors` extension is appended au
 | `GET` | `/upscalers` | List available pixel upscaler names (works even with no model loaded) |
 | `POST` | `/upscale` | Pixel-upscale an input image (works even with no model loaded) |
 | `POST` | `/text2image` | Generate an image |
+| `POST` | `/edit` | Edit an image from an instruction (image + prompt → edited image); requires an editing-capable model |
 
 ### `/text2image` request body
 
@@ -432,6 +460,26 @@ curl -s localhost:8000/text2image \
 
 If no model is loaded, `/text2image` returns HTTP 503.
 
+### `/edit` request body
+
+Instruction-based editing: image(s) + prompt → edited image. Requires an editing-capable model (Flux.2 Klein); otherwise returns HTTP 400.
+
+Accepts all `/text2image` fields plus:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `image` | `string` \| `string[]` | *(required)* | One or more base64-encoded reference images (OpenAI-style; first sets the output size when `width`/`height` omitted) |
+| `ref_latents_method` | `string` | `index` | Reference-latent packing method |
+
+### Example
+
+```bash
+curl -s localhost:8000/edit \
+  -H 'content-type: application/json' \
+  -d '{"image":"<base64 png>","prompt":"a fox wearing a red scarf","steps":4,"sampler":"euler"}' \
+  --output /tmp/fox_edited.png
+```
+
 ### `/upscale` request body
 
 Pixel-upscales an existing image by `upscale_factor`× with a named pixel upscaler. Unlike `/text2image`, this needs no diffusion model loaded — only an upscaler configured via `--upscaler-dir`.
@@ -458,7 +506,7 @@ curl -s localhost:8000/upscale \
 
 ## CLI Parameters Reference
 
-### Shared flags (`serve` and `generate`)
+### Shared flags (`serve`, `generate` and `edit`)
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
@@ -497,6 +545,15 @@ curl -s localhost:8000/upscale \
 | `--qwen-vae-enhance` | no | off | Nyquist notch post-filter |
 | `--film-grain` | no | `0.0` | Film grain strength (0.0–10.0) |
 | `--sharpening` | no | `0.0` | RCAS sharpening strength (0.0–1.0) |
+
+### `edit` only
+
+Edits an existing image from an instruction (image + prompt → edited image). Requires an editing-capable model (Flux.2 Klein) and shares all generation flags with `generate`.
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--image` | yes | — | Input image(s) to edit; repeatable for multiple reference images (first sets the output size) |
+| `--out` | no | `out_edit.png` | Output file path |
 
 ### `upscale` only
 
