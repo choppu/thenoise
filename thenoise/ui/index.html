@@ -41,14 +41,14 @@
   <div class="swap-row">
     <div class="field">
       <label class="label" for="width">Width</label>
-      <input type="number" id="width" placeholder="auto" value="1024">
+      <input type="number" id="width" placeholder="auto" value="1024" min="0">
       <span class="hint">Max 4096</span>
     </div>
     <button class="swap ctrl" id="swap" title="Swap width and height"
       aria-label="Swap width and height">&#8646;</button>
     <div class="field">
       <label class="label" for="height">Height</label>
-      <input type="number" id="height" placeholder="auto" value="1024">
+      <input type="number" id="height" placeholder="auto" value="1024" min="0">
       <span class="hint">Max 4096</span>
     </div>
   </div>
@@ -56,11 +56,11 @@
   <div class="row">
     <div class="field">
       <label class="label" for="steps">Steps</label>
-      <input type="number" id="steps" placeholder="auto">
+      <input type="number" id="steps" placeholder="auto" min="0">
     </div>
     <div class="field">
       <label class="label" for="guidance_scale">Guidance</label>
-      <input type="number" id="guidance_scale" step="0.1" placeholder="auto">
+      <input type="number" id="guidance_scale" step="0.1" placeholder="auto" min="0">
     </div>
   </div>
 
@@ -75,7 +75,7 @@
 
   <div class="field">
     <label class="label" for="seed">Seed</label>
-    <input type="number" id="seed" placeholder="random">
+    <input type="number" id="seed" placeholder="random" min="0">
   </div>
 
   <div class="divider"></div>
@@ -188,14 +188,14 @@
   <div class="swap-row">
     <div class="field">
       <label class="label" for="edit_width">Width</label>
-      <input type="number" id="edit_width" placeholder="auto" value="">
+      <input type="number" id="edit_width" placeholder="auto" value="" min="0">
       <span class="hint">Max 4096</span>
     </div>
     <button class="swap ctrl" id="eswap" title="Swap width and height"
       aria-label="Swap width and height">&#8646;</button>
     <div class="field">
       <label class="label" for="edit_height">Height</label>
-      <input type="number" id="edit_height" placeholder="auto" value="">
+      <input type="number" id="edit_height" placeholder="auto" value="" min="0">
       <span class="hint">Max 4096</span>
     </div>
   </div>
@@ -204,11 +204,11 @@
   <div class="row">
     <div class="field">
       <label class="label" for="edit_steps">Steps</label>
-      <input type="number" id="edit_steps" placeholder="auto">
+      <input type="number" id="edit_steps" placeholder="auto" min="0">
     </div>
     <div class="field">
       <label class="label" for="edit_guidance_scale">Guidance</label>
-      <input type="number" id="edit_guidance_scale" step="0.1" placeholder="auto">
+      <input type="number" id="edit_guidance_scale" step="0.1" placeholder="auto" min="0">
     </div>
   </div>
 
@@ -223,7 +223,7 @@
 
   <div class="field">
     <label class="label" for="edit_seed">Seed</label>
-    <input type="number" id="edit_seed" placeholder="random">
+    <input type="number" id="edit_seed" placeholder="random" min="0">
   </div>
 
   <div class="divider"></div>
@@ -369,6 +369,7 @@
   </div>
 </div>
 
-<script src="static/app.js"></script>
+<script src="static/js/helpers.js"></script>
+<script src="static/js/app.js"></script>
 </body>
 </html>
