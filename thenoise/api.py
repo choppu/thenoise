@@ -128,7 +128,11 @@ def create_app(runtime) -> FastAPI:
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "models": runtime.available()}
+        return {
+            "status": "ok",
+            "models": runtime.available(),
+            "capabilities": runtime.model_capabilities(),
+        }
 
     @app.get("/lora")
     def loras():

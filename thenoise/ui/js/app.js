@@ -258,18 +258,24 @@ loadUpscalers();
 updateUpscaleMax('');
 updateUpscaleMax('edit_');
 
-// Hide the generate/edit tabs when no model is loaded.
+// Hide the generate/edit tabs when no model is loaded, and disable the
+// edit tab when the loaded model doesn't support image editing.
 async function applyModelState() {
   let hasModel = true;
+  let supportsEdit = true;
   try {
     const res = await fetch('/health');
     if (res.ok) {
       const data = await res.json();
       hasModel = (data.models || []).length > 0;
+      supportsEdit = !!(data.capabilities && data.capabilities.supports_edit);
     }
   } catch (e) { /* assume a model is present on network errors */ }
   $('no_model').classList.toggle('hidden', hasModel);
   $('edit_no_model').classList.toggle('hidden', hasModel);
+  // Edit is usable only when a model is loaded AND it supports editing.
+  const editAvailable = hasModel && supportsEdit;
+  $('edit_no_support').classList.toggle('hidden', !hasModel || supportsEdit);
 }
 applyModelState();
 

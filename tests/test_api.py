@@ -84,6 +84,23 @@ def test_upscalers_available_without_model():
     assert res["upscalers"] == []
 
 
+def test_health_reports_edit_capability():
+    """/health exposes model capabilities so the UI can gate the Edit tab."""
+    runtime = _fake_runtime()
+    runtime._model = type("M", (), {"supports_edit": True})()
+    app = create_app(runtime)
+    res = _endpoint(app, "/health")()
+    assert res["models"] == ["fake"]
+    assert res["capabilities"] == {"supports_edit": True}
+
+
+def test_health_capabilities_empty_without_model():
+    app = create_app(_empty_runtime())
+    res = _endpoint(app, "/health")()
+    assert res["models"] == []
+    assert res["capabilities"] == {}
+
+
 def test_text2image_passes_pixel_upscaler(tmp_path):
     runtime = _fake_runtime(tmp_path)
     app = create_app(runtime)
