@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import torch
 from dataclasses import dataclass
-from typing import List, Optional, Union
+from typing import TYPE_CHECKING, List, Optional, Union
 
-from PIL import Image
+if TYPE_CHECKING:  # pragma: no cover - only for annotations
+    from PIL import Image
 
 
 @dataclass
@@ -77,11 +78,7 @@ class GenerateRequest:
     sharpening: float = 0.0
     lora_specs: Optional[List[str]] = None
     pixel_upscaler: Optional[str] = None
-    # Reference image(s) for editing (single OR list, OpenAI-style); the first
-    # sets the output aspect ratio / resolution.
     image: Optional[Union[Image.Image, List[Image.Image]]] = None
-    # Reference-latent method (ComfyUI convention); per-model index scales are owned by the model adapter.
-    ref_latents_method: str = "index"
 
 
 @dataclass(frozen=True)

@@ -107,9 +107,6 @@ def build_parser() -> argparse.ArgumentParser:
     gen = sub.add_parser("generate", help="run one generation and save a PNG")
     _add_model_paths(gen)
     _add_generation_args(gen)
-    gen.add_argument("--image", default="", metavar="PATH",
-                     help="input image for instruction-based editing; if given, "
-                          "runs an edit instead of text-to-image")
 
     # edit
     edit = sub.add_parser("edit", help="edit an image from an instruction "

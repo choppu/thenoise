@@ -10,7 +10,6 @@ import torch
 from PIL import Image
 
 from thenoise.dit.reference import (
-    build_reference_ids,
     concat_reference,
     slice_reference_output,
 )
@@ -22,35 +21,7 @@ from thenoise.upscale.pixel import PixelUpscalerManager
 from thenoise.utils.pipeline_cache import PipelineCache
 
 
-# ------------------------------------------------------------- reference ids
-
-
-def test_build_reference_ids_flux2():
-    # Flux2: 4 axes (t/h/w/l), index 10, not centered.
-    ids = build_reference_ids(64, 64, index=10, axes=4, device=torch.device("cpu"))
-    assert ids.shape == (1, 4096, 4)
-    assert ids.dtype == torch.long
-    # t-axis = index for every token.
-    assert torch.all(ids[0, :, 0] == 10)
-    # h-axis is row-major: token i has h = i // w (so every w shares an h).
-    assert ids[0, [0, 64, 128, 192], 1].tolist() == [0, 1, 2, 3]
-    # w-axis varies fastest: the first w tokens have w = 0..63.
-    assert ids[0, :64, 2].tolist() == list(range(64))
-    # l-axis (unused, still image) = 0.
-    assert torch.all(ids[0, :, 3] == 0)
-
-
-def test_build_reference_ids_qwen_centered():
-    # Qwen Image Edit: 3 axes, index 1, h/w centered on 0.
-    ids = build_reference_ids(32, 32, index=1, axes=3, center=True, device=torch.device("cpu"))
-    assert ids.shape == (1, 1024, 3)
-    assert torch.all(ids[0, :, 0] == 1)
-    # Top-left token: h=0 - 16 = -16, w=0 - 16 = -16.
-    assert ids[0, 0, 1].item() == -16
-    assert ids[0, 0, 2].item() == -16
-    # Center token (h=w=16) maps to 0.
-    assert ids[0, 16 * 32 + 16, 1].item() == 0
-    assert ids[0, 16 * 32 + 16, 2].item() == 0
+# ------------------------------------------------------------- reference helpers
 
 
 def test_concat_reference_none_is_noop():
@@ -152,7 +123,19 @@ class _StubEditModel(DiffusionModel):
 
 
 def _edit_controller():
-    return PipelineController(_StubEditModel(), PixelUpscalerManager(device="cpu"))
+    return PipelineController(_StubEditModel(), PixelUpscalerManager(upscaler_dir="", device="cpu"))
+
+
+class _SizeSpyModel(_StubEditModel):
+    """Records the resolved ``SamplingParams`` passed to ``init_latents``."""
+
+    def __init__(self):
+        super().__init__()
+        self.sizes = []
+
+    def init_latents(self, params):
+        self.sizes.append((params.width, params.height))
+        return super().init_latents(params)
 
 
 def test_edit_reuses_reference_for_same_image():
@@ -189,35 +172,48 @@ def test_edit_rejects_unsupported_model():
 
 
 def test_edit_derives_size_from_image_resized_to_1024():
-    """No width/height -> first image resized to 1024 on its largest side."""
-    controller = _edit_controller()
+    """No width/height -> first image resized to 1024 on its largest side.
+
+    The caller's request is left unmutated; the derived size is applied to a
+    local copy only.
+    """
+    controller = PipelineController(
+        _SizeSpyModel(), PixelUpscalerManager(upscaler_dir="", device="cpu")
+    )
     # 2:1 landscape image -> largest side 1024, height 512.
     img = Image.new("RGB", (100, 50), "red")
     request = GenerateRequest(prompt="p", image=img, seed=1)
     controller.edit(request)
-    assert request.width == 1024
-    assert request.height == 512
+    # Caller's request is NOT mutated.
+    assert request.width is None and request.height is None
+    # Resolved size: largest side 1024, aspect preserved.
+    assert controller.model.sizes == [(1024, 512)]
 
 
 def test_edit_derives_size_from_image_portrait():
     """Portrait image: largest side (height) resized to 1024."""
-    controller = _edit_controller()
+    controller = PipelineController(
+        _SizeSpyModel(), PixelUpscalerManager(upscaler_dir="", device="cpu")
+    )
     img = Image.new("RGB", (50, 100), "blue")  # 1:2 portrait
     request = GenerateRequest(prompt="p", image=img, seed=1)
     controller.edit(request)
-    assert request.width == 512
-    assert request.height == 1024
+    assert request.width is None and request.height is None
+    assert controller.model.sizes == [(512, 1024)]
 
 
 def test_edit_explicit_width_height_are_used():
     """Explicit width/height override the image-derived size."""
-    controller = _edit_controller()
+    controller = PipelineController(
+        _SizeSpyModel(), PixelUpscalerManager(upscaler_dir="", device="cpu")
+    )
     img = Image.new("RGB", (100, 50), "red")
     request = GenerateRequest(prompt="p", image=img, seed=1,
                               width=128, height=64)
     controller.edit(request)
-    assert request.width == 128
-    assert request.height == 64
+    # Explicit size is used (and never overridden by the image aspect).
+    assert controller.model.sizes == [(128, 64)]
+    assert request.width == 128 and request.height == 64
 
 
 def test_encode_prompt_receives_args_struct():
@@ -231,7 +227,7 @@ def test_encode_prompt_receives_args_struct():
             received["args"] = args
             return Conditioning(cond=torch.zeros(1, 8, 8), null=None)
 
-    controller = PipelineController(SpyModel(), PixelUpscalerManager(device="cpu"))
+    controller = PipelineController(SpyModel(), PixelUpscalerManager(upscaler_dir="", device="cpu"))
     img = Image.new("RGB", (64, 64), "red")
     controller.edit(GenerateRequest(prompt="p", negative_prompt="n",
                                     image=img, seed=1, guidance_scale=4.0))
@@ -248,14 +244,16 @@ def test_encode_prompt_receives_args_struct():
 
 def test_multi_edit_derives_size_from_first_image():
     """Output resolution/aspect derive from the FIRST reference image (to 1024)."""
-    controller = _edit_controller()
+    controller = PipelineController(
+        _SizeSpyModel(), PixelUpscalerManager(upscaler_dir="", device="cpu")
+    )
     first = Image.new("RGB", (100, 50), "red")   # 2:1 landscape
     second = Image.new("RGB", (50, 100), "blue")  # portrait (ignored for size)
     request = GenerateRequest(prompt="p", image=[first, second], seed=1)
     controller.edit(request)
     # Largest side from the first image's aspect ratio (2:1 landscape) -> 1024.
-    assert request.width == 1024
-    assert request.height == 512
+    assert controller.model.sizes == [(1024, 512)]
+    assert request.width is None and request.height is None
 
 
 def test_multi_edit_encodes_each_reference_once():

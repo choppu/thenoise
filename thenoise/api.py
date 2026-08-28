@@ -85,7 +85,6 @@ class EditRequest(Text2ImageRequest):
     """
 
     image: Union[str, List[str]]
-    ref_latents_method: str = "index"
 
     def to_edit_request(self):
         """Convert into a ``GenerateRequest`` carrying decoded PIL images."""
@@ -99,7 +98,6 @@ class EditRequest(Text2ImageRequest):
         req: GenerateRequest = self.to_request()
         # OpenAI-style: ``image`` is one or more images; store single or list.
         req.image = images[0] if len(images) == 1 else images
-        req.ref_latents_method = self.ref_latents_method
         return req
 
 

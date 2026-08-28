@@ -234,6 +234,8 @@ class PipelineController:
         # Derive size from the FIRST image's aspect ratio unless width/height given.
         # Without explicit width/height the first reference is resized to
         # ``_EDIT_DEFAULT_SIZE`` (1024) on its largest side, aspect preserved.
+        # A local ``replace`` keeps the caller's request unmutated.
+        local = request
         if request.width is None and request.height is None:
             iw, ih = images[0].size
             target = _EDIT_DEFAULT_SIZE
@@ -243,14 +245,13 @@ class PipelineController:
             else:
                 h = target
                 w = round(iw * target / ih)
-            request.width, request.height = w, h
+            local = replace(request, width=w, height=h)
 
-        r = self._resolve_pipeline(request)
+        r = self._resolve_pipeline(local)
         ref_key = self._cache_key_reference(images, r.width, r.height)
         return self._finalize(
-            self._run(request, r, ref_key=ref_key,
-                       ref_method=request.ref_latents_method),
-            request, r,
+            self._run(local, r, ref_key=ref_key, ref_method="index"),
+            local, r,
         )
 
     def _edit_images(self, request: GenerateRequest) -> list[Image.Image]:
@@ -626,6 +627,12 @@ class PipelineController:
         noise = torch.randn_like(z, generator=generator)
         noised = strength * noise + (1.0 - strength) * z
 
+        # NOTE: this refine pass runs WITHOUT the reference image. ``ref`` is not
+        # forwarded, so ``prepare_latent`` stashes ``_ref_tokens``/``_ref_ids`` = None
+        # and the refine denoise is completely unconditioned on the edit reference.
+        # For FluxKlein this is a deliberate simplification — in practice the
+        # low-strength refine shows no visible ill effect — but keep it in mind if
+        # the refine quality is ever revisited.
         x = model.prepare_latent(noised, cond, refine_params)
         solver = EulerSampler(model)
         x = solver.sample(

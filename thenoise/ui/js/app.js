@@ -74,39 +74,40 @@ const genHist = makeHistory({
     currentMeta = item.meta;
     showResult('image', 'placeholder', item.url);
     renderInfo(item.meta);
-    applySettings(item.meta);
+    applySettings('', item.meta);
     setStageActions($('download'), $('info_btn'), true);
   },
 });
 
-function applySettings(meta) {
+function applySettings(prefix, meta) {
   if (!meta) return;
-  $('prompt').value = meta.prompt ?? '';
-  $('negative_prompt').value = meta.negative_prompt ?? '';
-  if (meta.width != null) $('width').value = meta.width;
-  if (meta.height != null) $('height').value = meta.height;
-  if (meta.steps != null) $('steps').value = meta.steps;
-  if (meta.guidance_scale != null) $('guidance_scale').value = meta.guidance_scale;
-  if (meta.seed != null) $('seed').value = meta.seed;
-  if (meta.sampler) $('sampler').value = meta.sampler;
+  const p = prefix ? prefix + '_' : '';
+  $(p + 'prompt').value = meta.prompt ?? '';
+  $(p + 'negative_prompt').value = meta.negative_prompt ?? '';
+  if (meta.width != null) $(p + 'width').value = meta.width;
+  if (meta.height != null) $(p + 'height').value = meta.height;
+  if (meta.steps != null) $(p + 'steps').value = meta.steps;
+  if (meta.guidance_scale != null) $(p + 'guidance_scale').value = meta.guidance_scale;
+  if (meta.seed != null) $(p + 'seed').value = meta.seed;
+  if (meta.sampler) $(p + 'sampler').value = meta.sampler;
   if (meta.upscale_factor != null) {
-    setRange('upscale_factor', 'upscale_factor_val', meta.upscale_factor);
+    setRange(p + 'upscale_factor', p + 'upscale_factor_val', meta.upscale_factor);
   } else if (meta.upscale === true) {
     // legacy metadata: 'upscale: true' == 2x refined
-    setRange('upscale_factor', 'upscale_factor_val', 2);
-    $('upscale_type').value = 'refined';
+    setRange(p + 'upscale_factor', p + 'upscale_factor_val', 2);
+    $(p + 'upscale_type').value = 'refined';
   }
-  if (meta.upscale_type) $('upscale_type').value = meta.upscale_type;
-  if (meta.qwen_vae_enhance != null) $('qwen_vae_enhance').checked = meta.qwen_vae_enhance;
-  if (meta.film_grain != null) setRange('film_grain', 'film_grain_val', meta.film_grain);
-  if (meta.sharpening != null) setRange('sharpening', 'sharpening_val', meta.sharpening);
+  if (meta.upscale_type) $(p + 'upscale_type').value = meta.upscale_type;
+  if (meta.qwen_vae_enhance != null) $(p + 'qwen_vae_enhance').checked = meta.qwen_vae_enhance;
+  if (meta.film_grain != null) setRange(p + 'film_grain', p + 'film_grain_val', meta.film_grain);
+  if (meta.sharpening != null) setRange(p + 'sharpening', p + 'sharpening_val', meta.sharpening);
   if (Array.isArray(meta.lora_specs)) {
-    $('lora_specs').value = meta.lora_specs.join('\n');
+    $(p + 'lora_specs').value = meta.lora_specs.join('\n');
   }
   if (meta.pixel_upscaler) {
-    $('pixel_upscaler').value = meta.pixel_upscaler;
+    $(p + 'pixel_upscaler').value = meta.pixel_upscaler;
   }
-  updateUpscaleMax('');
+  updateUpscaleMax(prefix);
 }
 
 bindSwap('swap', 'width', 'height');
@@ -492,6 +493,7 @@ const editHist = makeHistory({
     eOutMeta = item.meta;
     showResult('e_img', 'eplaceholder', item.url);
     renderInfo(item.meta);
+    applySettings('edit', item.meta);
     setStageActions($('edownload'), $('einfo_btn'), true);
   },
 });

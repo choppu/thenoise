@@ -3,16 +3,8 @@
 Shared by Flux2 Klein and Qwen Image Edit (and any future reference-latent
 model). Both use the Flux-family mechanism: the input image is encoded to a
 latent, packed into DiT tokens + position ids, concatenated to the generated
-image tokens, and sliced back off the output. The only per-model differences
-are the number of position axes, the reference index offset, and whether the
-spatial axes are centered — all knobs on ``build_reference_ids``.
+image tokens, and sliced back off the output.
 
-  * ``build_reference_ids``    — position ids for a reference latent (index method).
-
-                           Note: ``build_reference_ids`` is forward-scaffolding for the
-                           planned Qwen Image Edit model and is NOT used by the Flux2
-                           Klein path (which packs references via ``prc_img``). It is
-                           exported and tested, but only exercised by tests today.
   * ``concat_reference``       — append reference tokens+ids to image tokens+ids.
   * ``slice_reference_output`` — drop the trailing reference tokens from the DiT output.
 """
@@ -20,32 +12,7 @@ from __future__ import annotations
 
 import torch
 
-__all__ = ["build_reference_ids", "concat_reference", "slice_reference_output"]
-
-
-def build_reference_ids(
-    h: int,
-    w: int,
-    *,
-    index: int,
-    axes: int,
-    center: bool = False,
-    device: torch.device,
-) -> torch.Tensor:
-    """Position ids for a reference latent of spatial size ``(h, w)``.
-
-    Mirrors ComfyUI's ``process_img`` for the "index" reference method.
-
-    Returns ``[1, h*w, axes]`` integer ids on ``device``.
-    """
-    ids = torch.zeros((h, w, axes), device=device, dtype=torch.long)
-    ids[:, :, 0] = index
-    ids[:, :, 1] = torch.linspace(0, h - 1, h, device=device, dtype=torch.long).unsqueeze(1)
-    ids[:, :, 2] = torch.linspace(0, w - 1, w, device=device, dtype=torch.long).unsqueeze(0)
-    if center:
-        ids[:, :, 1] -= h // 2
-        ids[:, :, 2] -= w // 2
-    return ids.reshape(1, -1, axes)
+__all__ = ["concat_reference", "slice_reference_output"]
 
 
 def concat_reference(

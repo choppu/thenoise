@@ -4,9 +4,8 @@ Thin wrappers over the same adapter ``generate()``/``edit()`` methods the HTTP A
 uses, so there is no logic drift between the two surfaces. The seed is resolved
 here (when not given) so it can be reported for reproducibility.
 
-``run_generate`` handles text-to-image (and, via ``--image``, one-shot editing).
-``run_edit`` is the dedicated edit entrypoint, always going through
-``pipeline.edit`` with the input image(s).
+``run_generate`` handles text-to-image only. ``run_edit`` is the dedicated edit
+entrypoint, always going through ``pipeline.edit`` with the input image(s).
 """
 from __future__ import annotations
 
@@ -85,15 +84,9 @@ def run_generate(args) -> None:
         pixel_upscaler=pixel_upscaler,
     )
 
-    # ``--image`` switches to instruction-based editing (same model, reference-
-    # latent path) instead of text-to-image.
-    if args.image:
-        from PIL import Image
-
-        request.image = Image.open(args.image).convert("RGB")
-        image = runtime.pipeline.edit(request)
-    else:
-        image = runtime.pipeline.generate(request)
+    # Text-to-image only: ``--image`` is no longer accepted here — use the
+    # dedicated ``edit`` subcommand for instruction-based editing.
+    image = runtime.pipeline.generate(request)
 
     # If the user omitted the output extension, PIL cannot infer a format.
     # Default to PNG so a bare --out like ``out`` (or ``dir/out``) still works.

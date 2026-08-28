@@ -279,7 +279,7 @@ selectable via `--sampler er_sde`.
 
 TheNoise can be used in several ways:
 
-1. **CLI `generate`** — generate a single image from the command line (or, with `--image`, edit one)
+1. **CLI `generate`** — generate a single image from the command line
 2. **CLI `edit`** — edit an existing image from an instruction (image + prompt → edited image)
 3. **CLI `upscale`** — pixel-upscale an existing image (no diffusion model needed)
 4. **HTTP server** — serve a model over HTTP with a JSON API (text-to-image, editing, upscaling)
