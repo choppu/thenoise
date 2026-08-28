@@ -128,3 +128,12 @@ class Runtime:
 
     def available(self) -> list[str]:
         return [self._model_name] if self._model else []
+
+    def model_capabilities(self) -> dict:
+        """Capabilities of the currently loaded model (empty when none loaded).
+        """
+        if self._model is None:
+            return {}
+        return {
+            "supports_edit": bool(getattr(self._model, "supports_edit", False)),
+        }
