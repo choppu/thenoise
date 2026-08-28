@@ -4,7 +4,18 @@ A text-to-image diffusion inference engine. Tested on Strix Halo, Strix Point an
 
 Loads one model at a time and generates images from text prompts. Editing-capable models can also edit existing images from a text instruction (image + prompt → edited image). Available as a CLI tool, an HTTP API (with a simple web UI).
 
-<img width="2048" height="1070" alt="thenoise-screenshot" src="https://github.com/user-attachments/assets/5731e570-efb2-43b5-8f71-b6d11d57c8aa" />
+<details open>
+  <summary>Generate tab</summary>
+  <img width="2048" height="1066" alt="thenoise-main-screenshot" src="https://github.com/user-attachments/assets/afaf2d89-5857-4f50-995f-06fdf556a3c4" />
+</details>
+<details>
+  <summary>Edit tab</summary>
+  <img width="2048" height="1066" alt="thenoise-edit" src="https://github.com/user-attachments/assets/17efedda-b887-4f87-b0c0-c151619b19ac" />
+</details>
+<details>
+  <summary>Upscale tab</summary> 
+  <img width="2048" height="1066" alt="thenoise-upscaler" src="https://github.com/user-attachments/assets/f7ce89b7-fd25-4ad9-a3e4-d5e367530ab7" />
+</details>
 
 ---
 
