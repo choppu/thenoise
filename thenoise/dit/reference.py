@@ -8,7 +8,12 @@ are the number of position axes, the reference index offset, and whether the
 spatial axes are centered — all knobs on ``build_reference_ids``.
 
   * ``build_reference_ids``    — position ids for a reference latent (index method).
-  * ``concat_reference``       — prepend reference tokens+ids to image tokens+ids.
+
+                           Note: ``build_reference_ids`` is forward-scaffolding for the
+                           planned Qwen Image Edit model and is NOT used by the Flux2
+                           Klein path (which packs references via ``prc_img``). It is
+                           exported and tested, but only exercised by tests today.
+  * ``concat_reference``       — append reference tokens+ids to image tokens+ids.
   * ``slice_reference_output`` — drop the trailing reference tokens from the DiT output.
 """
 from __future__ import annotations
@@ -49,7 +54,11 @@ def concat_reference(
     ref_tokens: torch.Tensor | None,
     ref_ids: torch.Tensor | None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Prepend reference tokens+ids to the image tokens+ids.
+    """Append reference tokens+ids to the image tokens+ids.
+
+    The reference stream is concatenated *after* the image tokens (``torch.cat([img, ref])``),
+    and ``slice_reference_output`` drops the trailing refs. Positions stay distinct via the
+    t-axis, so ordering does not affect attention.
 
     ``ref_tokens``/``ref_ids`` of ``None`` (plain generation) return
     ``img``/``img_ids`` unchanged.

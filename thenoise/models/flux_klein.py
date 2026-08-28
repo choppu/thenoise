@@ -233,8 +233,13 @@ class FluxKleinModel(DiffusionModel):
         """Canonical reference latent -> (tokens, ids), t-axis = REF_INDEX*ref_index.
 
         ``ref_index`` is the 1-based position (ComfyUI ``ref_index_scale``): the
-        first ref uses 10, the second 20, etc.
+        first ref uses 10, the second 20, etc. Only the ``index`` packing method
+        is supported; anything else is rejected rather than silently ignored.
         """
+        if method != "index":
+            raise ValueError(
+                f"unsupported ref_latents_method {method!r}; only 'index' is supported"
+            )
         dev = torch.device(self.device)
         index = self.REF_INDEX * ref_index
         return prc_img(

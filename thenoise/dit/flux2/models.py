@@ -374,14 +374,17 @@ class Flux2(nn.Module):
         self.num_double_blocks = len(self.double_blocks)
         self.num_single_blocks = len(self.single_blocks)
 
-        # Per-block compiled-forward cache: ``(block_id, dynamic)``. t2i compiles
-        # static (fixed shape); edit (variable ref count) compiles dynamic to
-        # avoid Inductor's recompile/`CantSplit` failure on the grown sequence.
-        self._compiled_blocks: dict[tuple[int, bool], Callable] = {}
+        # Per-block compiled-forward cache: ``(blocks, index, dynamic)``. t2i
+        # compiles static (fixed shape); edit (variable ref count) compiles
+        # dynamic to avoid Inductor's recompile/`CantSplit` failure on the grown
+        # sequence. Keyed by the owning ModuleList + position (not ``id(block)``),
+        # which also keeps the double vs single streams from colliding.
+        self._compiled_blocks: dict[tuple[nn.ModuleList, int, bool], Callable] = {}
 
-    def _compile_block(self, block: nn.Module, dynamic: bool) -> Callable:
-        """Cached ``torch.compile``d forward for ``block`` (one per (block, dynamic))."""
-        key = (id(block), dynamic)
+    def _compile_block(self, blocks: nn.ModuleList, index: int, dynamic: bool) -> Callable:
+        """Cached ``torch.compile``d forward for ``blocks[index]``."""
+        block = blocks[index]
+        key = (blocks, index, dynamic)
         fn = self._compiled_blocks.get(key)
         if fn is None:
             fn = torch.compile(block.forward, fullgraph=True, dynamic=dynamic)
@@ -420,7 +423,7 @@ class Flux2(nn.Module):
         double_block_mod_txt = self.double_stream_modulation_txt(vec)
         single_block_mod, _ = self.single_stream_modulation(vec)
 
-        # Reference-latent editing (Flux2 Klein): prepend the reference image
+        # Reference-latent editing (Flux2 Klein): append the reference image
         # tokens+ids to the image stream (in packed-latent space) so the DiT
         # attends to them alongside the text instruction. ``None`` (plain t2i)
         # is a no-op. Must happen before ``img_in``/``pe_embedder`` so the refs
@@ -432,19 +435,19 @@ class Flux2(nn.Module):
         pe_x = self.pe_embedder(x_ids)
         pe_ctx = self.pe_embedder(ctx_ids)
 
-        # Edit varies seq length (ref tokens prepended), so compile blocks
+        # Edit varies seq length (ref tokens appended), so compile blocks
         # dynamically there; t2i keeps static-specialized kernels.
         dynamic = ref_tokens is not None or ref_ids is not None
 
-        for block in self.double_blocks:
-            fwd = self._compile_block(block, dynamic)
+        for i in range(len(self.double_blocks)):
+            fwd = self._compile_block(self.double_blocks, i, dynamic)
             img, txt = fwd(img, txt, pe_x, pe_ctx, double_block_mod_img, double_block_mod_txt)
 
         img = torch.cat((txt, img), dim=1)
         pe = torch.cat((pe_ctx, pe_x), dim=2)
 
-        for block in self.single_blocks:
-            fwd = self._compile_block(block, dynamic)
+        for i in range(len(self.single_blocks)):
+            fwd = self._compile_block(self.single_blocks, i, dynamic)
             img = fwd(img, pe, single_block_mod)
 
         img = img.to(vec.device)

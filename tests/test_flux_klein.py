@@ -210,6 +210,20 @@ def test_pack_reference_latent_successive_index():
     assert cat.shape == (1, 32, 4)
 
 
+def test_pack_reference_latent_rejects_unsupported_method():
+    """An unsupported ``ref_latents_method`` raises rather than being ignored."""
+    import pytest
+
+    model = FluxKleinModel.__new__(FluxKleinModel)  # no __init__ (no weights)
+    model.device = "cpu"
+    model.dtype = torch.float32
+    model.REF_INDEX = 10
+    ref = torch.randn(1, 8, 4, 4)
+    with pytest.raises(ValueError):
+        model.pack_reference_latent(ref, method="crop")
+
+
+
 def test_resize_to_cover_center_crop_keeps_target_size():
     """ComfyUI-style ref resize: cover the target, center-crop; no padding."""
     from PIL import Image
