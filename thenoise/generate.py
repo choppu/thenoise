@@ -1,11 +1,11 @@
-"""CLI generation: load one model, run one generation/edit, save a single PNG.
+"""CLI generation: load one model, run one generation, save a single PNG.
 
 Thin wrappers over the same adapter ``generate()``/``edit()`` methods the HTTP API
 uses, so there is no logic drift between the two surfaces. The seed is resolved
 here (when not given) so it can be reported for reproducibility.
 
-``run_generate`` handles text-to-image only. ``run_edit`` is the dedicated edit
-entrypoint, always going through ``pipeline.edit`` with the input image(s).
+``run_generate`` is text-to-image only; ``run_edit`` handles instruction-based
+editing through ``pipeline.edit`` with the input image(s).
 """
 from __future__ import annotations
 
@@ -84,8 +84,6 @@ def run_generate(args) -> None:
         pixel_upscaler=pixel_upscaler,
     )
 
-    # Text-to-image only: ``--image`` is no longer accepted here — use the
-    # dedicated ``edit`` subcommand for instruction-based editing.
     image = runtime.pipeline.generate(request)
 
     # If the user omitted the output extension, PIL cannot infer a format.

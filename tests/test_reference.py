@@ -184,9 +184,7 @@ def test_edit_derives_size_from_image_resized_to_1024():
     img = Image.new("RGB", (100, 50), "red")
     request = GenerateRequest(prompt="p", image=img, seed=1)
     controller.edit(request)
-    # Caller's request is NOT mutated.
     assert request.width is None and request.height is None
-    # Resolved size: largest side 1024, aspect preserved.
     assert controller.model.sizes == [(1024, 512)]
 
 
@@ -211,7 +209,6 @@ def test_edit_explicit_width_height_are_used():
     request = GenerateRequest(prompt="p", image=img, seed=1,
                               width=128, height=64)
     controller.edit(request)
-    # Explicit size is used (and never overridden by the image aspect).
     assert controller.model.sizes == [(128, 64)]
     assert request.width == 128 and request.height == 64
 

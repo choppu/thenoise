@@ -183,16 +183,15 @@ All download commands use `.venv/bin/python` and need the `scripts` extra
 installed (`uv pip install -e ".[scripts]"`), because `huggingface_hub` lives
 in the project venv created by [Setup](#setup) — a bare `python` will not work.
 
-| Model | Download size | Notes |
-|-------|---------------|-------|
-| Anima | ~5.4 GB | 2B params; fastest to download and run |
-| Krea 2 | ~35 GB | Higher quality; much larger text encoder and DiT |
-| Z-Image-Turbo | ~21 GB | Distilled 8-step S3-DiT; Flux VAE + Qwen3 caption encoder |
-| Z-Image | ~21 GB | Non-distilled version of Z-Image-Turbo |
-| Flux.2 Klein 4B | ~12 GB | Distilled 4-step flow MMDiT; Flux.2 VAE + Qwen3-4B; **supports editing** |
-| Flux.2 Klein 9B | ~25 GB | Distilled 4-step flow MMDiT; Flux.2 VAE + Qwen3-8B; **supports editing** |
+| Model | Download size | Notes | Editing |
+|-------|---------------|-------|------|
+| Anima | ~5.4 GB | 2B params; fastest to download and run | x |
+| Krea 2 | ~35 GB | Higher quality; much larger text encoder and DiT | x |
+| Z-Image-Turbo | ~21 GB | Distilled 8-step S3-DiT; Flux VAE + Qwen3 caption encoder | x |
+| Z-Image | ~21 GB | Non-distilled version of Z-Image-Turbo | x |
+| Flux.2 Klein 4B | ~12 GB | Distilled 4-step flow MMDiT; Flux.2 VAE + Qwen3-4B | ✓ |
+| Flux.2 Klein 9B | ~25 GB | Distilled 4-step flow MMDiT; Flux.2 VAE + Qwen3-8B | ✓ |
 
-Only Flux.2 Klein supports [image editing](#editing) (`supports_edit`); the other models are text-to-image only.
 
 ### Krea 2
 
@@ -469,7 +468,6 @@ Accepts all `/text2image` fields plus:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `image` | `string` \| `string[]` | *(required)* | One or more base64-encoded reference images (OpenAI-style; first sets the output size when `width`/`height` omitted) |
-| `ref_latents_method` | `string` | `index` | Reference-latent packing method |
 
 ### Example
 
