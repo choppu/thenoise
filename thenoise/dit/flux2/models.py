@@ -145,9 +145,9 @@ def attention(qkv_list: list[Tensor], pe: Tensor) -> Tensor:
 class MLPEmbedder(nn.Module):
     def __init__(self, in_dim: int, hidden_dim: int, disable_bias: bool = False):
         super().__init__()
-        self.in_layer = nn.Linear(in_dim, hidden_dim, bias=not disable_bias)
+        self.in_layer = QuantizedLinear(in_dim, hidden_dim, bias=not disable_bias)
         self.silu = nn.SiLU()
-        self.out_layer = nn.Linear(hidden_dim, hidden_dim, bias=not disable_bias)
+        self.out_layer = QuantizedLinear(hidden_dim, hidden_dim, bias=not disable_bias)
 
     def forward(self, x: Tensor) -> Tensor:
         return self.out_layer(self.silu(self.in_layer(x)))
@@ -180,7 +180,7 @@ class Modulation(nn.Module):
         super().__init__()
         self.is_double = double
         self.multiplier = 6 if double else 3
-        self.lin = nn.Linear(dim, self.multiplier * dim, bias=not disable_bias)
+        self.lin = QuantizedLinear(dim, self.multiplier * dim, bias=not disable_bias)
 
     def forward(self, vec: torch.Tensor):
         org_dtype = vec.dtype
@@ -197,8 +197,8 @@ class LastLayer(nn.Module):
     def __init__(self, hidden_size: int, out_channels: int):
         super().__init__()
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.linear = nn.Linear(hidden_size, out_channels, bias=False)
-        self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(hidden_size, 2 * hidden_size, bias=False))
+        self.linear = QuantizedLinear(hidden_size, out_channels, bias=False)
+        self.adaLN_modulation = nn.Sequential(nn.SiLU(), QuantizedLinear(hidden_size, 2 * hidden_size, bias=False))
 
     def forward(self, x: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
         org_dtype = x.dtype
@@ -350,9 +350,9 @@ class Flux2(nn.Module):
         self.num_heads = params.num_heads
 
         self.pe_embedder = EmbedND(dim=pe_dim, theta=params.theta, axes_dim=params.axes_dim)
-        self.img_in = nn.Linear(self.in_channels, self.hidden_size, bias=False)
+        self.img_in = QuantizedLinear(self.in_channels, self.hidden_size, bias=False)
         self.time_in = MLPEmbedder(in_dim=256, hidden_dim=self.hidden_size, disable_bias=True)
-        self.txt_in = nn.Linear(params.context_in_dim, self.hidden_size, bias=False)
+        self.txt_in = QuantizedLinear(params.context_in_dim, self.hidden_size, bias=False)
 
         self.use_guidance_embed = params.use_guidance_embed
         if self.use_guidance_embed:

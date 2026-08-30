@@ -33,7 +33,7 @@ class QuantizedLinear(nn.Module):
         self,
         in_features: int,
         out_features: int,
-        bias: bool = False,
+        bias: bool = True,
         convrot_groupsize: int = 256,
     ) -> None:
         super().__init__()
