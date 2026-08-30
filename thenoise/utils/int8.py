@@ -11,6 +11,7 @@ INT8 at load time; every other layer is assigned normally.
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Optional
 
@@ -46,10 +47,50 @@ def is_int8_checkpoint(dit_path: str) -> bool:
     return False
 
 
+def read_int8_groupsizes(dit_path: str) -> dict[str, int]:
+    """Read per-layer ConvRot group sizes from the checkpoint's quantization metadata.
+
+    ComfyUI's INT8 exporter records a ``_quantization_metadata`` header entry
+    mapping each quantized layer to its ``convrot_groupsize``. The group size is
+    baked into the stored (rotated) weights and per-row scales: inference MUST
+    rotate activations with the same group size the weights were quantized at,
+    or the dequantized GEMM is garbage (wrong images).
+
+    Returns ``{module_path: group_size}`` (wrapper prefixes stripped to match
+    ``load_int8_state_dict``'s module paths); empty when the checkpoint carries
+    no metadata (older exports default to 256, matching ``QuantizedLinear``).
+    """
+    with MemoryEfficientSafeOpen(dit_path) as f:
+        meta = f.metadata().get("_quantization_metadata")
+    if not meta:
+        return {}
+    try:
+        data = json.loads(meta)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Could not parse _quantization_metadata in %s; "
+            "using default ConvRot group size", dit_path
+        )
+        return {}
+    groupsizes: dict[str, int] = {}
+    for layer, info in (data.get("layers") or {}).items():
+        gs = (info or {}).get("convrot_groupsize")
+        if gs is None:
+            continue
+        key = layer
+        for prefix in WRAP_PREFIXES:
+            if key.startswith(prefix):
+                key = key[len(prefix):]
+                break
+        groupsizes[key] = gs
+    return groupsizes
+
+
 def load_int8_state_dict(
     model: torch.nn.Module,
     state_dict: dict[str, torch.Tensor],
     dtype: Optional[torch.dtype] = None,
+    groupsizes: Optional[dict[str, int]] = None,
 ) -> None:
     """Populate ``model`` from an INT8+ConvRot state dict.
 
@@ -59,6 +100,11 @@ def load_int8_state_dict(
     etc.) is replaced with the loaded tensor, cast to ``dtype`` when given (the
     INT8 kernels emit BF16, so full-precision params must match). ``comfy_quant``
     metadata markers are ignored.
+
+    ``groupsizes`` optionally maps each module path to the ConvRot group size
+    declared in the checkpoint's ``_quantization_metadata`` (see
+    ``read_int8_groupsizes``); layers absent from the map keep the module's
+    default (256).
 
     ``state_dict`` must already have generic wrapper prefixes stripped (see
     ``thenoise.utils.safetensors.load_dit_safetensors``).
@@ -77,7 +123,8 @@ def load_int8_state_dict(
         module_path, _, attr = key.rpartition(".")
         module = _submodule(model, module_path, key)
         if attr == "weight" and tensor.dtype == torch.int8:
-            _switch_to_int8(module, tensor, scales.pop(module_path, None), key)
+            groupsize = groupsizes.get(module_path) if groupsizes else None
+            _switch_to_int8(module, tensor, scales.pop(module_path, None), key, groupsize)
         elif isinstance(getattr(module, attr, None), torch.nn.Parameter):
             # BF16/full-precision leaf parameter (weight, bias, pad tokens, ...):
             # replace the (meta, init-time) parameter rather than ``param.data =
@@ -104,7 +151,7 @@ def _submodule(model: torch.nn.Module, module_path: str, key: str) -> torch.nn.M
         ) from e
 
 
-def _switch_to_int8(module: torch.nn.Module, qweight: torch.Tensor, scale, key: str) -> None:
+def _switch_to_int8(module: torch.nn.Module, qweight: torch.Tensor, scale, key: str, groupsize: Optional[int] = None) -> None:
     if scale is None:
         raise RuntimeError(f"INT8 weight {key!r} is missing its {_WEIGHT_SCALE_SUFFIX}")
     if not hasattr(module, "load_int8"):
@@ -112,7 +159,7 @@ def _switch_to_int8(module: torch.nn.Module, qweight: torch.Tensor, scale, key: 
             f"INT8 weight {key!r} landed on {type(module).__name__}, "
             "which has no load_int8(); it must be a QuantizedLinear"
         )
-    module.load_int8(qweight, scale)
+    module.load_int8(qweight, scale, convrot_groupsize=groupsize)
 
 
-__all__ = ["is_int8_checkpoint", "load_int8_state_dict"]
+__all__ = ["is_int8_checkpoint", "read_int8_groupsizes", "load_int8_state_dict"]

@@ -16,7 +16,7 @@ from typing import Callable, Optional, Union
 
 import torch
 
-from thenoise.utils.int8 import is_int8_checkpoint, load_int8_state_dict
+from thenoise.utils.int8 import is_int8_checkpoint, load_int8_state_dict, read_int8_groupsizes
 from thenoise.utils.safetensors import load_dit_safetensors
 from thenoise.utils.setup_logging import setup_logging
 
@@ -67,7 +67,11 @@ def load_dit(
     if is_int8_checkpoint(path):
         if int8_key_map is not None:
             sd = {int8_key_map(k): v for k, v in sd.items()}
-        load_int8_state_dict(model, sd, dtype=dtype)
+        # ConvRot group size is baked into each layer's weights+scales at export
+        # time and must match the activation rotation at inference; read it from
+        # the checkpoint metadata (defaults to 256 when absent).
+        groupsizes = read_int8_groupsizes(path)
+        load_int8_state_dict(model, sd, dtype=dtype, groupsizes=groupsizes)
         logger.info("Loaded INT8+ConvRot checkpoint from %s", path)
     else:
         if dtype is not None:
