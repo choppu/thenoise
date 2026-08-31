@@ -3,7 +3,7 @@
 Every DiT adapter loads its weights through a single entry point,
 ``load_dit``, which automatically selects the correct quantization:
 
-* **INT8+ConvRot** checkpoint (detected via ``is_int8_checkpoint``): weights
+* **INT8** checkpoint (detected via ``is_int8_checkpoint``): weights
   land via ``load_int8_state_dict`` — quantized linears on modules exposing
   ``load_int8`` (``QuantizedLinear``), full-precision params cast to ``dtype``.
 * **BF16 / plain** checkpoint: weights land via ``load_state_dict(assign=True)``,
@@ -16,7 +16,7 @@ from typing import Callable, Optional, Union
 
 import torch
 
-from thenoise.utils.int8 import is_int8_checkpoint, load_int8_state_dict, read_int8_groupsizes
+from thenoise.utils.int8 import is_int8_checkpoint, load_int8_state_dict
 from thenoise.utils.safetensors import load_dit_safetensors
 from thenoise.utils.setup_logging import setup_logging
 
@@ -67,12 +67,12 @@ def load_dit(
     if is_int8_checkpoint(path):
         if int8_key_map is not None:
             sd = {int8_key_map(k): v for k, v in sd.items()}
-        # ConvRot group size is baked into each layer's weights+scales at export
-        # time and must match the activation rotation at inference; read it from
-        # the checkpoint metadata (defaults to 256 when absent).
-        groupsizes = read_int8_groupsizes(path)
-        load_int8_state_dict(model, sd, dtype=dtype, groupsizes=groupsizes)
-        logger.info("Loaded INT8+ConvRot checkpoint from %s", path)
+        # ConvRot group size / rotation flag is baked into each layer's weights
+        # and scales at export time and must match the activation rotation at
+        # inference; ``load_int8_state_dict`` reads it from each layer's
+        # ``comfy_quant`` marker in the state dict (defaults to convrot, 256).
+        load_int8_state_dict(model, sd, dtype=dtype)
+        logger.info("Loaded INT8 checkpoint from %s", path)
     else:
         if dtype is not None:
             sd = {k: v.to(dtype=dtype) for k, v in sd.items()}

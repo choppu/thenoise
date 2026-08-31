@@ -1,4 +1,4 @@
-"""Reusable INT8+ConvRot linear projection.
+"""Reusable INT8 linear projection.
 
 ``QuantizedLinear`` is a drop-in replacement for ``nn.Linear`` on layers a model
 wants to run as symmetric INT8 with online ConvRot (Hadamard) activation rotation
@@ -27,7 +27,7 @@ import comfy_kitchen
 
 
 class QuantizedLinear(nn.Module):
-    """Linear projection that runs BF16 (default) or INT8+ConvRot."""
+    """Linear projection that runs BF16 (default) or INT8."""
 
     def __init__(
         self,
@@ -40,6 +40,7 @@ class QuantizedLinear(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.convrot_groupsize = convrot_groupsize
+        self.convrot = True  # set from the checkpoint's comfy_quant marker at load
         # float32 default (matching ``nn.Linear``); the model is cast to the compute
         # dtype (bf16) by the adapter, or the weight is replaced at load time.
         self.weight = nn.Parameter(torch.empty(out_features, in_features))
@@ -75,17 +76,22 @@ class QuantizedLinear(nn.Module):
         self,
         qweight: torch.Tensor,
         scale: torch.Tensor,
+        convrot: bool = True,
         convrot_groupsize: Optional[int] = None,
     ) -> None:
-        """Switch this layer to INT8+ConvRot using pre-quantized weights.
+        """Switch this layer to INT8 using pre-quantized weights.
 
         Args:
             qweight: int8 weight tensor ``[out, in]``.
             scale: per-row F32 scale ``[out]`` (or ``[out, 1]``).
+            convrot: whether the weights were ConvRot-rotated at export and so
+                activations must be rotated at inference (from the checkpoint's
+                ``comfy_quant`` marker).
             convrot_groupsize: Hadamard group size (defaults to 256).
         """
         self.register_buffer("qweight", qweight)
         self.register_buffer("scale", scale)
+        self.convrot = convrot
         if convrot_groupsize is not None:
             self.convrot_groupsize = convrot_groupsize
         self.register_parameter("weight", None)  # free the BF16 weights
@@ -136,7 +142,7 @@ class QuantizedLinear(nn.Module):
                 self.scale,
                 self.bias,
                 self._out_dtype_code,
-                True,  # convrot
+                self.convrot,
                 self.convrot_groupsize,
                 input_act,
             )

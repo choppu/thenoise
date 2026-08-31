@@ -1,4 +1,4 @@
-"""INT8+ConvRot support tests.
+"""INT8 support tests.
 
 These cover the shared ``QuantizedLinear`` module and the generic INT8 loading
 helpers. They run on CPU (comfy_kitchen's eager backend) and need no GPU or real
@@ -157,37 +157,77 @@ def test_is_int8_checkpoint_false_for_bf16(tmp_path):
     assert is_int8_checkpoint(str(p)) is False
 
 
-def _write_with_meta(path, tensors, metadata):
-    from safetensors.torch import save_file
-    save_file(tensors, str(path), metadata=metadata)
+def _comfy_quant(convrot=True, groupsize=256):
+    """Build a ``comfy_quant`` marker tensor like ComfyUI's INT8 exporter."""
+    import json
+
+    conf = {"convrot": bool(convrot)}
+    if convrot:
+        conf["convrot_groupsize"] = int(groupsize)
+    conf["per_row"] = True
+    data = json.dumps(conf).encode("utf-8")
+    return torch.tensor(list(data), dtype=torch.uint8)
 
 
-def test_read_int8_groupsizes(tmp_path):
-    from thenoise.utils.int8 import read_int8_groupsizes
+def test_comfy_quant_marker_sets_groupsize(tmp_path):
+    from thenoise.utils.loader import load_dit
 
+    # A layer quantized with convrot_groupsize=64 must rotate activations with
+    # 64 at inference, NOT the default 256, or the images are garbage. The
+    # group size is read from the layer's comfy_quant marker tensor.
     p = tmp_path / "int8.safetensors"
-    meta = {
-        "_quantization_metadata": (
-            '{"format_version": "1.0", "layers": '
-            '{"blocks.0.proj": {"format": "int8_tensorwise", "convrot": true, '
-            '"convrot_groupsize": 64}, '
-            '"model.diffusion_model.blocks.1.qkv": {"format": "int8_tensorwise", '
-            '"convrot": true, "convrot_groupsize": 256}}}'
-        )
-    }
-    _write_with_meta(p, {"blocks.0.proj.weight": torch.zeros(8, 8, dtype=torch.int8)}, meta)
-    gs = read_int8_groupsizes(str(p))
-    # wrapper prefix stripped so module paths match load_int8_state_dict
-    assert gs == {"blocks.0.proj": 64, "blocks.1.qkv": 256}
+    _write(p, {
+        "q.weight": torch.randint(-127, 127, (512, 256), dtype=torch.int8),
+        "q.weight_scale": torch.rand(512, 1),
+        "q.comfy_quant": _comfy_quant(convrot=True, groupsize=64),
+        "plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
+        "plain.bias": torch.randn(512, dtype=torch.bfloat16),
+    })
+    model = _TinyModel()
+    load_dit(model, str(p), device="cpu", dtype=torch.bfloat16)
+    assert model.q._int8 is True
+    assert model.q.convrot is True
+    assert model.q.convrot_groupsize == 64
 
 
-def test_read_int8_groupsizes_missing_metadata_is_empty(tmp_path):
-    from thenoise.utils.int8 import read_int8_groupsizes
+def test_comfy_quant_marker_convrot_false(tmp_path):
+    from thenoise.utils.loader import load_dit
 
+    # A layer whose in_features were not divisible by the group size is NOT
+    # ConvRot-rotated: the marker records convrot=false, and inference must not
+    # rotate activations (default is convrot=true).
     p = tmp_path / "int8.safetensors"
-    _write(p, {"q.weight": torch.zeros(8, 8, dtype=torch.int8)})
-    assert read_int8_groupsizes(str(p)) == {}
+    _write(p, {
+        "q.weight": torch.randint(-127, 127, (512, 256), dtype=torch.int8),
+        "q.weight_scale": torch.rand(512, 1),
+        "q.comfy_quant": _comfy_quant(convrot=False),
+        "plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
+        "plain.bias": torch.randn(512, dtype=torch.bfloat16),
+    })
+    model = _TinyModel()
+    load_dit(model, str(p), device="cpu", dtype=torch.bfloat16)
+    assert model.q._int8 is True
+    assert model.q.convrot is False
+    assert model.q.convrot_groupsize == 256  # irrelevant when convrot=False
 
+
+def test_comfy_quant_marker_defaults(tmp_path):
+    from thenoise.utils.loader import load_dit
+
+    # No marker (or an unparseable one) keeps the default convrot profile.
+    p = tmp_path / "int8.safetensors"
+    _write(p, {
+        "q.weight": torch.randint(-127, 127, (512, 256), dtype=torch.int8),
+        "q.weight_scale": torch.rand(512, 1),
+        "q.comfy_quant": torch.zeros(8, dtype=torch.uint8),
+        "plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
+        "plain.bias": torch.randn(512, dtype=torch.bfloat16),
+    })
+    model = _TinyModel()
+    load_dit(model, str(p), device="cpu", dtype=torch.bfloat16)
+    assert model.q._int8 is True
+    assert model.q.convrot is True
+    assert model.q.convrot_groupsize == 256
 
 
 # --------------------------------------------------------------------------- load_int8_state_dict
@@ -204,7 +244,7 @@ def _tiny_state_dict():
     return {
         "q.weight": torch.randint(-127, 127, (512, 256), dtype=torch.int8),
         "q.weight_scale": torch.rand(512, 1, dtype=torch.float32),
-        "q.comfy_quant": torch.zeros(8, dtype=torch.uint8),
+        "q.comfy_quant": _comfy_quant(convrot=True, groupsize=256),
         "plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
         "plain.bias": torch.randn(512, dtype=torch.bfloat16),
     }
@@ -245,54 +285,6 @@ def test_load_int8_state_dict_orphan_scale_raises():
 
 
 # --------------------------------------------------------------------------- load_dit (central quant-aware loader)
-
-
-def test_load_dit_int8_convrot_groupsize_from_metadata(tmp_path):
-    from thenoise.utils.loader import load_dit
-
-    # A checkpoint quantized with convrot_groupsize=64 must rotate activations
-    # with 64 at inference, NOT the default 256, or the images are garbage.
-    meta = {
-        "_quantization_metadata": (
-            '{"format_version": "1.0", "layers": '
-            '{"q": {"format": "int8_tensorwise", "convrot": true, '
-            '"convrot_groupsize": 64}}}'
-        )
-    }
-    p = tmp_path / "int8.safetensors"
-    _write_with_meta(p, {
-        "q.weight": torch.randint(-127, 127, (512, 256), dtype=torch.int8),
-        "q.weight_scale": torch.rand(512, 1),
-        "q.comfy_quant": torch.zeros(8, dtype=torch.uint8),
-        "plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
-        "plain.bias": torch.randn(512, dtype=torch.bfloat16),
-    }, meta)
-    model = _TinyModel()
-    load_dit(model, str(p), device="cpu", dtype=torch.bfloat16)
-    assert model.q._int8 is True
-    assert model.q.convrot_groupsize == 64
-
-    # Without metadata the layer keeps the default 256.
-    p2 = tmp_path / "int8-default.safetensors"
-    _write(p2, {
-        "q.weight": torch.randint(-127, 127, (512, 256), dtype=torch.int8),
-        "q.weight_scale": torch.rand(512, 1),
-        "q.comfy_quant": torch.zeros(8, dtype=torch.uint8),
-        "plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
-        "plain.bias": torch.randn(512, dtype=torch.bfloat16),
-    })
-    model2 = _TinyModel()
-    load_dit(model2, str(p2), device="cpu", dtype=torch.bfloat16)
-    assert model2.q._int8 is True
-    assert model2.q.convrot_groupsize == 256
-
-
-def test_load_int8_state_dict_groupsize_override(tmp_path):
-    from thenoise.utils.int8 import load_int8_state_dict
-
-    model = _TinyModel()
-    load_int8_state_dict(model, _tiny_state_dict(), groupsizes={"q": 64})
-    assert model.q.convrot_groupsize == 64
 
 
 def test_load_dit_int8(tmp_path):
