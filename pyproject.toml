@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "thenoise"
-version = "0.5.1"
+version = "0.6.0"
 description = "Diffusion inference engine targeting ROCm"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,7 +20,7 @@ dependencies = [
     "einops>=0.7.0",
     "accelerate>=1.6.0",
     "pillow>=11.3.0",
-    "comfy-kitchen>=0.2.31",
+    "comfy-kitchen>=0.2.32",
     "numpy",
     "tqdm",
 ]
