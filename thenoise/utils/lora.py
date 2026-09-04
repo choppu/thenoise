@@ -17,13 +17,12 @@ def _match_prefixed_lora_keys(
     lora_name: str,
     lora_weight_keys: str,
 ) -> Optional[Tuple[str, str, str]]:
-    for suffix in [(".lora_down", ".lora_up"), (".lora_A", ".lora_B")]:
-        (suffix_a, suffix_b) = suffix
-        down_key = lora_name + suffix_a + ".weight"
-        up_key = lora_name + suffix_b + ".weight"
+    for (suffix_a, suffix_b) in [(".lora_down", ".lora_up"), (".lora_A", ".lora_B")]:
+        a_key = lora_name + suffix_a + ".weight"
+        b_key = lora_name + suffix_b + ".weight"
         alpha_key = lora_name + ".alpha"
-        if down_key in lora_weight_keys and up_key in lora_weight_keys:
-            return (down_key, up_key, alpha_key)
+        if a_key in lora_weight_keys and b_key in lora_weight_keys:
+            return (a_key, b_key, alpha_key)
     return None        
 
 def _match_lora_keys(
