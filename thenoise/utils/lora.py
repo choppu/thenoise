@@ -13,6 +13,19 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _match_prefixed_lora_keys(
+    lora_name: str,
+    lora_weight_keys: str,
+) -> Optional[Tuple[str, str, str]]:
+    for suffix in [(".lora_down", ".lora_up"), (".lora_A", ".lora_B")]:
+        (suffix_a, suffix_b) = suffix
+        down_key = lora_name + suffix_a + ".weight"
+        up_key = lora_name + suffix_b + ".weight"
+        alpha_key = lora_name + ".alpha"
+        if down_key in lora_weight_keys and up_key in lora_weight_keys:
+            return (down_key, up_key, alpha_key)
+    return None        
+
 def _match_lora_keys(
     model_weight_key: str,
     lora_weight_keys: set,
@@ -26,23 +39,19 @@ def _match_lora_keys(
 
     lora_name_without_prefix = model_weight_key.rsplit(".", 1)[0]
 
-    # sd-scripts naming: underscore-joined path, lora_down/lora_up.
+    # sd-scripts naming: underscore-joined path
     for prefix in ["lora_unet_", ""]:
         lora_name = prefix + lora_name_without_prefix.replace(".", "_")
-        down_key = lora_name + ".lora_down.weight"
-        up_key = lora_name + ".lora_up.weight"
-        alpha_key = lora_name + ".alpha"
-        if down_key in lora_weight_keys and up_key in lora_weight_keys:
-            return (down_key, up_key, alpha_key)
+        res = _match_prefixed_lora_keys(lora_name, lora_weight_keys)
+        if res:
+            return res
 
-    # diffusers-style naming: dotted path, lora_A/lora_B.
+    # diffusers-style naming: dotted path
     for prefix in ["diffusion_model.", ""]:
         lora_name = prefix + lora_name_without_prefix
-        a_key = lora_name + ".lora_A.weight"
-        b_key = lora_name + ".lora_B.weight"
-        alpha_key = lora_name + ".alpha"
-        if a_key in lora_weight_keys and b_key in lora_weight_keys:
-            return (a_key, b_key, alpha_key)
+        res = _match_prefixed_lora_keys(lora_name, lora_weight_keys)
+        if res:
+            return res
 
     return None
 
