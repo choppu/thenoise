@@ -6,101 +6,98 @@ These cover the shared ``QuantizedLinear`` module (backed by comfy_kitchen's
 """
 from __future__ import annotations
 
-import os
-
 import pytest
 import torch
-import torch.nn as nn
-
 from comfy_kitchen.tensor import QuantizedTensor
-from comfy_kitchen.tensor.fp8 import TensorCoreFP8Layout
-from comfy_kitchen.tensor.int8 import TensorWiseINT8Layout
 
+from conftest import (
+    TinyDiT,
+    bf16_tensors,
+    comfy_quant,
+    fp8_pair,
+    fp8_qt,
+    int8_checkpoint,
+    int8_lora_state_dict,
+    int8_pair,
+    int8_qt,
+    int8_tensors,
+    write_safetensors,
+    wrapped_fp8_tensor,
+    wrapped_int8_tensor,
+)
 from thenoise.dit.quantized import QuantizedLinear
 from thenoise.utils.loader import (
     is_quantized_checkpoint,
+    load_dit,
     load_quantized_state_dict,
 )
 
-
-def _int8_qt(qweight, scale, convrot=True, groupsize=256):
-    """Wrap int8 weight + scale into a TensorWiseINT8Layout QuantizedTensor."""
-    params = TensorWiseINT8Layout.Params(
-        scale=scale,
-        orig_dtype=torch.bfloat16,
-        orig_shape=tuple(qweight.shape),
-        is_weight=True,
-        convrot=convrot,
-        convrot_groupsize=groupsize,
-    )
-    return QuantizedTensor(qweight, "TensorWiseINT8Layout", params)
+OUT_F, IN_F = 512, 256
 
 
-def _fp8_qt(qweight, scale):
-    """Wrap an fp8 weight + per-tensor scale into a TensorCoreFP8Layout QuantizedTensor."""
-    params = TensorCoreFP8Layout.Params(
-        scale=scale,
-        orig_dtype=torch.bfloat16,
-        orig_shape=tuple(qweight.shape),
-    )
-    return QuantizedTensor(qweight, "TensorCoreFP8Layout", params)
+# ------------------------------------------------------------- QuantizedLinear
 
 
-# --------------------------------------------------------------------------- QuantizedLinear (INT8 raw-op path)
+def _bf16_x(rows=4):
+    return torch.randn(rows, IN_F, dtype=torch.bfloat16)
 
 
 def test_quantized_linear_bf16_forward():
-    layer = QuantizedLinear(256, 512, bias=False)
+    layer = QuantizedLinear(IN_F, OUT_F, bias=False)
     torch.nn.init.ones_(layer.weight)
     layer = layer.to(torch.bfloat16)  # models are cast to bf16 by the adapter
-    x = torch.randn(4, 256, dtype=torch.bfloat16)
-    out = layer(x)
-    assert out.shape == (4, 512)
+    out = layer(_bf16_x())
+    assert out.shape == (4, OUT_F)
     assert out.dtype == torch.bfloat16
     assert not layer._quantized
 
 
-def test_quantized_linear_int8_forward():
-    layer = QuantizedLinear(256, 512, bias=False)
-    qweight = torch.randint(-127, 127, (512, 256), dtype=torch.int8)
-    scale = torch.rand(512, 1, dtype=torch.float32)
-    layer.load_quantized(_int8_qt(qweight, scale))
-    assert layer._quantized
-    assert isinstance(layer.weight, QuantizedTensor)
-    assert layer.weight._qdata.dtype == torch.int8
-    assert layer.weight.params.scale.dtype == torch.float32
+@pytest.mark.parametrize(
+    "qt,stored_dtype",
+    [(wrapped_int8_tensor(), torch.int8), (wrapped_fp8_tensor(), torch.float8_e4m3fn)],
+    ids=["int8", "fp8"],
+)
+def test_quantized_linear_load_quantized_and_forward(qt, stored_dtype):
+    layer = QuantizedLinear(IN_F, OUT_F, bias=False)
+    assert isinstance(layer.weight, torch.nn.Parameter)
 
-    x = torch.randn(4, 256, dtype=torch.bfloat16)
-    out = layer(x)
-    assert out.shape == (4, 512)
+    layer.load_quantized(qt)
+    assert layer._quantized
+    # The bf16 parameter is dropped (weight is now the quantized buffer) -> the
+    # memory saving this whole path exists for.
+    assert isinstance(layer.weight, QuantizedTensor)
+    assert layer.weight._qdata.dtype == stored_dtype
+
+    out = layer(_bf16_x())
+    assert out.shape == (4, OUT_F)
     assert out.dtype == torch.bfloat16
 
 
-def test_quantized_linear_load_quantized_frees_bf16_weight():
-    layer = QuantizedLinear(256, 512)
-    assert isinstance(layer.weight, nn.Parameter)
-    layer.load_quantized(_int8_qt(torch.zeros(512, 256, dtype=torch.int8), torch.zeros(512, 1)))
-    # bf16 parameter dropped (weight is now the quantized buffer) -> memory savings
-    assert isinstance(layer.weight, QuantizedTensor)
-
-
-def test_quantized_linear_int8_bake_lora():
-    layer = QuantizedLinear(256, 512)
-    layer.load_quantized(
-        _int8_qt(torch.randint(-127, 127, (512, 256), dtype=torch.int8), torch.rand(512, 1))
-    )
-    x = torch.randn(4, 256, dtype=torch.bfloat16)
-    base = layer(x)  # without LoRA
+@pytest.mark.parametrize("layout", ["int8", "fp8"])
+def test_quantized_linear_bake_lora_requantizes_in_place(layout):
+    """The delta is baked into the stored low-bit weight, profile preserved."""
+    layer = QuantizedLinear(IN_F, OUT_F, bias=False)
+    if layout == "int8":
+        qweight, scale = int8_pair()
+        layer.load_quantized(int8_qt(qweight, scale))
+    else:
+        qweight, scale = fp8_pair()
+        layer.load_quantized(fp8_qt(qweight, scale))
+    stored_dtype = layer.weight._qdata.dtype
     orig_q = layer.weight._qdata.clone()
 
-    # LoRA factors: down [r, in], up [out, r]. The baked delta is
+    x = _bf16_x()
+    base = layer(x)
+
+    # LoRA factors: down [r, in], up [out, r]; the baked delta is
     # (up @ down) * (alpha/r * multiplier), shaped [out, in].
-    down = torch.randn(8, 256, dtype=torch.bfloat16) * 6
-    up = torch.randn(512, 8, dtype=torch.bfloat16) * 6
-    alpha, multiplier = 8.0, 2.0
-    delta = (up @ down) * (alpha / down.size(0) * multiplier)
+    down = torch.randn(8, IN_F, dtype=torch.bfloat16) * 6
+    up = torch.randn(OUT_F, 8, dtype=torch.bfloat16) * 6
+    delta = (up @ down) * (8.0 / down.size(0) * 2.0)
     layer.bake_lora(delta)
-    assert not torch.equal(layer.weight._qdata, orig_q)  # baked into int8 weights
+
+    assert not torch.equal(layer.weight._qdata, orig_q)  # requantized in place
+    assert layer.weight._qdata.dtype == stored_dtype  # layout profile preserved
 
     out = layer(x)
     # The INT8 GEMM also quantizes activations, so an exact match to
@@ -108,560 +105,289 @@ def test_quantized_linear_int8_bake_lora():
     # substantially and lands much closer to the delta expectation than to base.
     err_to_expected = (out.float() - (base + x @ delta.t()).float()).abs().max()
     err_to_base = (out.float() - base.float()).abs().max()
-    assert err_to_base > 1.0  # LoRA has a clear effect
-    assert err_to_expected < err_to_base  # output follows the delta direction
+    assert err_to_base > 1.0
+    assert err_to_expected < err_to_base
 
 
-# --------------------------------------------------------------------------- QuantizedLinear (FP8 fallback path)
+# ------------------------------------------------------- quantized LoRA undo
 
 
-def test_quantized_linear_fp8_forward():
-    layer = QuantizedLinear(256, 512, bias=False)
-    # Proper fp8 E4M3 weight + per-tensor scale.
-    qweight = torch.randn(512, 256, dtype=torch.bfloat16)
-    scale = torch.tensor(qweight.abs().amax().item() / 448.0, dtype=torch.float32)
-    fp8 = qweight.to(torch.float8_e4m3fn)
-    layer.load_quantized(_fp8_qt(fp8, scale))
-    assert layer._quantized
-    assert isinstance(layer.weight, QuantizedTensor)
-    assert layer.weight._qdata.dtype == torch.float8_e4m3fn
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},                                                  # plain INT8
+        {"weight_dtype": torch.float8_e4m3fn},                # FP8 (per-tensor scale)
+        {"prefix": "model.diffusion_model."},                 # ComfyUI repackage
+    ],
+    ids=["int8", "fp8", "int8-wrapped"],
+)
+def test_apply_lora_bakes_quantized_and_undo_reloads_from_disk(kwargs, tmp_path):
+    """Undo reloads the ORIGINAL low-bit weights from the checkpoint by raw key.
 
-    x = torch.randn(4, 256, dtype=torch.bfloat16)
-    out = layer(x)
-    assert out.shape == (4, 512)
-    assert out.dtype == torch.bfloat16
-
-
-def test_quantized_linear_fp8_bake_lora():
-    layer = QuantizedLinear(256, 512)
-    qweight = torch.randn(512, 256, dtype=torch.bfloat16)
-    scale = torch.tensor(qweight.abs().amax().item() / 448.0, dtype=torch.float32)
-    layer.load_quantized(_fp8_qt(qweight.to(torch.float8_e4m3fn), scale))
-    orig_q = layer.weight._qdata.clone()
-
-    down = torch.randn(8, 256, dtype=torch.bfloat16) * 6
-    up = torch.randn(512, 8, dtype=torch.bfloat16) * 6
-    delta = (up @ down) * (8.0 / down.size(0) * 2.0)
-    layer.bake_lora(delta)
-    assert not torch.equal(layer.weight._qdata, orig_q)  # requantized fp8
-    assert layer.weight._qdata.dtype == torch.float8_e4m3fn  # profile preserved
-
-
-class _TinyInt8Model(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.q = QuantizedLinear(256, 512)
-        self.q.load_quantized(
-            _int8_qt(torch.randint(-127, 127, (512, 256), dtype=torch.int8), torch.rand(512, 1))
-        )
-        self.plain = QuantizedLinear(256, 512)
-
-
-def _int8_lora_sd():
-    return {
-        "q.lora_down.weight": torch.randn(8, 256, dtype=torch.bfloat16),
-        "q.lora_up.weight": torch.randn(512, 8, dtype=torch.bfloat16),
-        "q.alpha": torch.tensor(8.0),
-    }
-
-
-def test_apply_lora_to_model_int8_bake_and_restore(tmp_path):
-    from thenoise.utils.loader import load_dit
+    The raw key must survive the wrapper-prefix stripping, otherwise a
+    repackaged checkpoint restores nothing (the LoRA would stay baked in).
+    """
     from thenoise.utils.lora import apply_lora_to_model, undo_lora_on_model
 
-    # Write an INT8 checkpoint matching ``_TinyInt8Model`` and load it through
-    # ``load_dit`` so the raw-key restore map is built on the model.
-    qweight = torch.randint(-127, 127, (512, 256), dtype=torch.int8)
-    scale = torch.rand(512, 1)
-    p = tmp_path / "int8.safetensors"
-    _write(p, {
-        "q.weight": qweight,
-        "q.weight_scale": scale,
-        "q.comfy_quant": torch.zeros(8, dtype=torch.uint8),
-        "plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
-        "plain.bias": torch.randn(512, dtype=torch.bfloat16),
-    })
-    model = _TinyInt8Model()
-    load_dit(model, str(p), device="cpu", dtype=torch.bfloat16)
+    prefix = kwargs.get("prefix", "")
+    path, tensors = int8_checkpoint(tmp_path / "dit.safetensors", **kwargs)
+    model = TinyDiT()
+    load_dit(model, path, device="cpu", dtype=torch.bfloat16)
+    assert model.q._quantized
     orig_q = model.q.weight._qdata.clone()
+    orig_scale = model.q.weight.params.scale.clone()
+    assert torch.equal(orig_scale, tensors[f"{prefix}q.weight_scale"])
 
     result = apply_lora_to_model(
-        model, [_int8_lora_sd()], [1.0], torch.device("cpu"), dit_path=str(p)
+        model, [int8_lora_state_dict()], [1.0], torch.device("cpu"), dit_path=path
     )
     assert result["quantized_affected"] == ("q",)
-    assert result["quantized_restore_keys"] == ("q.weight",)
-    assert result["dit_path"] == str(p)
-    assert not torch.equal(model.q.weight._qdata, orig_q)  # baked into int8 weights
-
-    # Undo reloads the original INT8 weights from disk by raw key.
-    undo_lora_on_model(model, result, torch.device("cpu"))
-    assert torch.equal(model.q.weight._qdata, orig_q)
-    assert torch.equal(model.q.weight.params.scale, scale)
-
-
-def test_apply_lora_to_model_int8_undo_without_dit_path_raises(tmp_path):
-    from thenoise.utils.loader import load_dit
-    from thenoise.utils.lora import apply_lora_to_model, undo_lora_on_model
-
-    # Load a real checkpoint (restore keys captured), but apply without a
-    # dit_path so undo has no file to reload from.
-    p = tmp_path / "int8.safetensors"
-    _write(p, {
-        "q.weight": torch.randint(-127, 127, (512, 256), dtype=torch.int8),
-        "q.weight_scale": torch.rand(512, 1),
-        "q.comfy_quant": torch.zeros(8, dtype=torch.uint8),
-        "plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
-        "plain.bias": torch.randn(512, dtype=torch.bfloat16),
-    })
-    model = _TinyInt8Model()
-    load_dit(model, str(p), device="cpu", dtype=torch.bfloat16)
-
-    result = apply_lora_to_model(model, [_int8_lora_sd()], [1.0], torch.device("cpu"))
-    assert result["quantized_restore_keys"] == ("q.weight",)  # captured from the model
-    with pytest.raises(RuntimeError, match="no dit_path"):
-        undo_lora_on_model(model, result, torch.device("cpu"))
-
-
-def test_apply_lora_to_model_int8_wrapped_restore(tmp_path):
-    from thenoise.utils.loader import load_dit
-    from thenoise.utils.lora import apply_lora_to_model, undo_lora_on_model
-
-    # Repackaged checkpoint with the generic ``model.diffusion_model.`` prefix;
-    # the restore map must strip it so the captured raw key still finds the
-    # tensor on undo.
-    qweight = torch.randint(-127, 127, (512, 256), dtype=torch.int8)
-    scale = torch.rand(512, 1)
-    p = tmp_path / "int8_wrapped.safetensors"
-    _write(p, {
-        "model.diffusion_model.q.weight": qweight,
-        "model.diffusion_model.q.weight_scale": scale,
-        "model.diffusion_model.q.comfy_quant": torch.zeros(8, dtype=torch.uint8),
-        "model.diffusion_model.plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
-        "model.diffusion_model.plain.bias": torch.randn(512, dtype=torch.bfloat16),
-    })
-    model = _TinyInt8Model()
-    load_dit(model, str(p), device="cpu", dtype=torch.bfloat16)
-    orig_q = model.q.weight._qdata.clone()
-
-    result = apply_lora_to_model(
-        model, [_int8_lora_sd()], [1.0], torch.device("cpu"), dit_path=str(p)
-    )
-    assert result["quantized_restore_keys"] == ("model.diffusion_model.q.weight",)
+    assert result["quantized_restore_keys"] == (f"{prefix}q.weight",)
+    assert result["dit_path"] == path
     assert not torch.equal(model.q.weight._qdata, orig_q)
 
     undo_lora_on_model(model, result, torch.device("cpu"))
     assert torch.equal(model.q.weight._qdata, orig_q)
+    assert torch.equal(model.q.weight.params.scale, orig_scale)
 
 
-def test_apply_lora_to_model_mixed_int8_and_bf16():
+def test_apply_lora_undo_without_dit_path_raises(tmp_path):
+    from thenoise.utils.lora import apply_lora_to_model, undo_lora_on_model
+
+    # Restore keys are captured at load time, but undo has no file to read them
+    # from -> a hard error rather than a silently half-restored model.
+    path, _ = int8_checkpoint(tmp_path / "int8.safetensors")
+    model = TinyDiT()
+    load_dit(model, path, device="cpu", dtype=torch.bfloat16)
+
+    result = apply_lora_to_model(model, [int8_lora_state_dict()], [1.0], torch.device("cpu"))
+    assert result["quantized_restore_keys"] == ("q.weight",)
+    with pytest.raises(RuntimeError, match="no dit_path"):
+        undo_lora_on_model(model, result, torch.device("cpu"))
+
+
+def test_apply_lora_mixed_quantized_and_bf16_layers():
     from thenoise.utils.lora import apply_lora_to_model
 
-    model = _TinyInt8Model()
+    model = TinyDiT(quantized=True)
     orig_q = model.q.weight._qdata.clone()
     orig_plain = model.plain.weight.clone()
-    # LoRA targeting both the int8 q layer and the bf16 plain layer
-    sd = {
-        "q.lora_down.weight": torch.randn(8, 256, dtype=torch.bfloat16),
-        "q.lora_up.weight": torch.randn(512, 8, dtype=torch.bfloat16),
-        "q.alpha": torch.tensor(8.0),
-        "plain.lora_down.weight": torch.randn(8, 256, dtype=torch.bfloat16),
-        "plain.lora_up.weight": torch.randn(512, 8, dtype=torch.bfloat16),
-        "plain.alpha": torch.tensor(8.0),
-    }
-    result = apply_lora_to_model(model, [sd], [1.0], torch.device("cpu"))
+
+    loras = int8_lora_state_dict("q") | int8_lora_state_dict("plain")
+    result = apply_lora_to_model(model, [loras], [1.0], torch.device("cpu"))
+
     assert not torch.equal(model.q.weight._qdata, orig_q)  # int8 layer baked
     assert not torch.equal(model.plain.weight, orig_plain)  # bf16 layer mutated
     assert "plain.weight" in result["affected_keys"]
     assert result["quantized_affected"] == ("q",)
 
 
-def test_apply_lora_to_model_fp8_bake_and_restore(tmp_path):
-    from thenoise.utils.loader import load_dit
-    from thenoise.utils.lora import apply_lora_to_model, undo_lora_on_model
-
-    # FP8 checkpoint with a per-tensor scale (like comfy-quants fp8_e4m3).
-    qweight = torch.randn(512, 256, dtype=torch.bfloat16)
-    fp8 = qweight.to(torch.float8_e4m3fn)
-    scale = torch.tensor(0.5, dtype=torch.float32)
-    p = tmp_path / "fp8.safetensors"
-    _write(p, {
-        "q.weight": fp8,
-        "q.weight_scale": scale,
-        "q.comfy_quant": torch.zeros(8, dtype=torch.uint8),
-        "plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
-        "plain.bias": torch.randn(512, dtype=torch.bfloat16),
-    })
-    model = _TinyInt8Model()  # same shape layout; q will load as fp8
-    load_dit(model, str(p), device="cpu", dtype=torch.bfloat16)
-    assert model.q._quantized
-    assert model.q.weight._qdata.dtype == torch.float8_e4m3fn
-    orig_q = model.q.weight._qdata.clone()
-
-    result = apply_lora_to_model(
-        model, [_int8_lora_sd()], [1.0], torch.device("cpu"), dit_path=str(p)
-    )
-    assert result["quantized_restore_keys"] == ("q.weight",)
-    assert not torch.equal(model.q.weight._qdata, orig_q)  # baked fp8
-
-    undo_lora_on_model(model, result, torch.device("cpu"))
-    assert torch.equal(model.q.weight._qdata, orig_q)
-    assert torch.equal(model.q.weight.params.scale, scale)
+# ------------------------------------------------------ is_quantized_checkpoint
 
 
-# --------------------------------------------------------------------------- is_quantized_checkpoint
+@pytest.mark.parametrize(
+    "tensors,expected",
+    [
+        # INT8 and FP8 both carry a ``.weight_scale`` next to the low-bit weight.
+        (int8_tensors(), True),
+        (int8_tensors(weight_dtype=torch.float8_e4m3fn), True),
+        # A wrapped INT8 file is still quantized (the prefix is stripped first).
+        (int8_tensors(prefix="model.diffusion_model."), True),
+        (bf16_tensors(), False),
+        # The check is a header-name heuristic: any ``.weight_scale`` is enough to
+        # take the quantized load path (which then fails loudly if no low-bit
+        # weight owns it, rather than silently loading garbage).
+        ({"blocks.0.attn.q_proj.weight_scale": torch.zeros(16, 1)}, True),
+    ],
+    ids=["int8", "fp8", "int8-wrapped", "bf16", "scale-only"],
+)
+def test_is_quantized_checkpoint(tmp_path, tensors, expected):
+    path = write_safetensors(tmp_path / "ckpt.safetensors", tensors)
+    assert is_quantized_checkpoint(path) is expected
 
 
-def _write(path, tensors):
-    from safetensors.torch import save_file
-    save_file(tensors, str(path))
+# ------------------------------------------------------------ comfy_quant marker
 
 
-def test_is_quantized_checkpoint_true_int8(tmp_path):
-    p = tmp_path / "int8.safetensors"
-    _write(p, {
-        "model.diffusion_model.blocks.0.cross_attn.k_proj.weight": torch.zeros(16, 8, dtype=torch.int8),
-        "model.diffusion_model.blocks.0.cross_attn.k_proj.weight_scale": torch.zeros(16, 1, dtype=torch.float32),
-        "model.diffusion_model.blocks.0.cross_attn.k_proj.comfy_quant": torch.zeros(8, dtype=torch.uint8),
-    })
-    assert is_quantized_checkpoint(str(p)) is True
+@pytest.mark.parametrize(
+    "marker,convrot,groupsize",
+    [
+        # A layer quantized with convrot_groupsize=64 must rotate activations
+        # with 64 at inference, NOT the default 256, or the images are garbage.
+        (comfy_quant(convrot=True, groupsize=64), True, 64),
+        # A layer whose in_features were not divisible by the group size is NOT
+        # ConvRot-rotated: inference must not rotate (default is convrot=true).
+        (comfy_quant(convrot=False), False, 256),
+        # No marker at all keeps the default profile...
+        (None, True, 256),
+        # ...and so does an unparseable one.
+        (torch.zeros(8, dtype=torch.uint8), True, 256),
+    ],
+    ids=["groupsize-64", "convrot-off", "no-marker", "unparseable-marker"],
+)
+def test_comfy_quant_marker_drives_the_inference_profile(tmp_path, marker, convrot, groupsize):
+    path, _ = int8_checkpoint(tmp_path / "int8.safetensors", marker=marker)
+    model = TinyDiT()
+    load_dit(model, path, device="cpu", dtype=torch.bfloat16)
 
-
-def test_is_quantized_checkpoint_true_fp8(tmp_path):
-    p = tmp_path / "fp8.safetensors"
-    _write(p, {
-        "blocks.0.cross_attn.k_proj.weight": torch.randn(16, 8, dtype=torch.bfloat16).to(torch.float8_e4m3fn),
-        "blocks.0.cross_attn.k_proj.weight_scale": torch.tensor(0.5, dtype=torch.float32),
-        "blocks.0.cross_attn.k_proj.comfy_quant": torch.zeros(8, dtype=torch.uint8),
-    })
-    assert is_quantized_checkpoint(str(p)) is True
-
-
-def test_is_quantized_checkpoint_false_for_bf16(tmp_path):
-    p = tmp_path / "bf16.safetensors"
-    _write(p, {
-        "blocks.0.cross_attn.k_proj.weight": torch.zeros(16, 8, dtype=torch.bfloat16),
-    })
-    assert is_quantized_checkpoint(str(p)) is False
-
-
-def _comfy_quant(convrot=True, groupsize=256):
-    """Build a ``comfy_quant`` marker tensor like ComfyUI's INT8 exporter."""
-    import json
-
-    conf = {"convrot": bool(convrot)}
-    if convrot:
-        conf["convrot_groupsize"] = int(groupsize)
-    conf["per_row"] = True
-    data = json.dumps(conf).encode("utf-8")
-    return torch.tensor(list(data), dtype=torch.uint8)
-
-
-def test_comfy_quant_marker_sets_groupsize(tmp_path):
-    from thenoise.utils.loader import load_dit
-
-    # A layer quantized with convrot_groupsize=64 must rotate activations with
-    # 64 at inference, NOT the default 256, or the images are garbage. The
-    # group size is read from the layer's comfy_quant marker tensor.
-    p = tmp_path / "int8.safetensors"
-    _write(p, {
-        "q.weight": torch.randint(-127, 127, (512, 256), dtype=torch.int8),
-        "q.weight_scale": torch.rand(512, 1),
-        "q.comfy_quant": _comfy_quant(convrot=True, groupsize=64),
-        "plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
-        "plain.bias": torch.randn(512, dtype=torch.bfloat16),
-    })
-    model = _TinyModel()
-    load_dit(model, str(p), device="cpu", dtype=torch.bfloat16)
     assert model.q._quantized is True
-    assert model.q.weight.params.convrot is True
-    assert model.q.weight.params.convrot_groupsize == 64
+    assert model.q.weight.params.convrot is convrot
+    assert model.q.weight.params.convrot_groupsize == groupsize
 
 
-def test_comfy_quant_marker_convrot_false(tmp_path):
-    from thenoise.utils.loader import load_dit
-
-    # A layer whose in_features were not divisible by the group size is NOT
-    # ConvRot-rotated: the marker records convrot=false, and inference must not
-    # rotate activations (default is convrot=true).
-    p = tmp_path / "int8.safetensors"
-    _write(p, {
-        "q.weight": torch.randint(-127, 127, (512, 256), dtype=torch.int8),
-        "q.weight_scale": torch.rand(512, 1),
-        "q.comfy_quant": _comfy_quant(convrot=False),
-        "plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
-        "plain.bias": torch.randn(512, dtype=torch.bfloat16),
-    })
-    model = _TinyModel()
-    load_dit(model, str(p), device="cpu", dtype=torch.bfloat16)
-    assert model.q._quantized is True
-    assert model.q.weight.params.convrot is False
-    assert model.q.weight.params.convrot_groupsize == 256  # irrelevant when convrot=False
-
-
-def test_comfy_quant_marker_defaults(tmp_path):
-    from thenoise.utils.loader import load_dit
-
-    # No marker (or an unparseable one) keeps the default convrot profile.
-    p = tmp_path / "int8.safetensors"
-    _write(p, {
-        "q.weight": torch.randint(-127, 127, (512, 256), dtype=torch.int8),
-        "q.weight_scale": torch.rand(512, 1),
-        "q.comfy_quant": torch.zeros(8, dtype=torch.uint8),
-        "plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
-        "plain.bias": torch.randn(512, dtype=torch.bfloat16),
-    })
-    model = _TinyModel()
-    load_dit(model, str(p), device="cpu", dtype=torch.bfloat16)
-    assert model.q._quantized is True
-    assert model.q.weight.params.convrot is True
-    assert model.q.weight.params.convrot_groupsize == 256
-
-
-# --------------------------------------------------------------------------- load_quantized_state_dict
-
-
-class _TinyModel(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.q = QuantizedLinear(256, 512, bias=False)
-        self.plain = nn.Linear(256, 512, bias=True)
-
-
-def _tiny_state_dict():
-    return {
-        "q.weight": torch.randint(-127, 127, (512, 256), dtype=torch.int8),
-        "q.weight_scale": torch.rand(512, 1, dtype=torch.float32),
-        "q.comfy_quant": _comfy_quant(convrot=True, groupsize=256),
-        "plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
-        "plain.bias": torch.randn(512, dtype=torch.bfloat16),
-    }
+# --------------------------------------------------- load_quantized_state_dict
 
 
 def test_load_quantized_state_dict_mixed():
-    model = _TinyModel()
-    load_quantized_state_dict(model, _tiny_state_dict())
+    model = TinyDiT()
+    load_quantized_state_dict(model, int8_tensors())
 
-    # quantized layer switched to INT8
+    # The quantized layer switched to INT8...
     assert model.q._quantized is True
     assert isinstance(model.q.weight, QuantizedTensor)
     assert model.q.weight._qdata.dtype == torch.int8
     assert model.q.weight.params.scale.dtype == torch.float32
-
-    # bf16 layer assigned normally
+    # ...and the full-precision layer was assigned normally.
     assert model.plain.weight.dtype == torch.bfloat16
     assert model.plain.bias.dtype == torch.bfloat16
 
     # forward runs end-to-end (bf16 in -> bf16 out)
-    x = torch.randn(4, 256, dtype=torch.bfloat16)
-    assert model.q(x).shape == (4, 512)
+    x = _bf16_x()
+    assert model.q(x).shape == (4, OUT_F)
     assert model.q(x).dtype == torch.bfloat16
 
 
-def test_load_quantized_state_dict_fp8():
-    model = _TinyModel()
-    sd = _tiny_state_dict()
-    w = torch.randn(512, 256, dtype=torch.bfloat16)
-    sd["q.weight"] = w.to(torch.float8_e4m3fn)
-    sd["q.weight_scale"] = torch.tensor(0.5, dtype=torch.float32)
+def test_load_quantized_state_dict_fp8_uses_a_per_tensor_scale():
+    model = TinyDiT()
+    sd = int8_tensors(weight_dtype=torch.float8_e4m3fn, scale=torch.tensor(0.5))
     load_quantized_state_dict(model, sd)
 
     assert model.q._quantized is True
     assert model.q.weight._qdata.dtype == torch.float8_e4m3fn
-    assert model.q.weight.params.scale.shape == ()  # per-tensor scale
-
-    x = torch.randn(4, 256, dtype=torch.bfloat16)
-    assert model.q(x).shape == (4, 512)
-    assert model.q(x).dtype == torch.bfloat16
+    assert model.q.weight.params.scale.shape == ()  # per-tensor, not per-row
+    assert model.q(_bf16_x()).dtype == torch.bfloat16
 
 
 def test_load_quantized_state_dict_missing_scale_raises():
-    sd = _tiny_state_dict()
+    sd = int8_tensors()
     del sd["q.weight_scale"]
     with pytest.raises(RuntimeError, match="missing its .weight_scale"):
-        load_quantized_state_dict(_TinyModel(), sd)
+        load_quantized_state_dict(TinyDiT(), sd)
 
 
 def test_load_quantized_state_dict_orphan_scale_raises():
-    sd = _tiny_state_dict()
-    sd["plain.weight_scale"] = torch.zeros(512, 1, dtype=torch.float32)
+    sd = int8_tensors()
+    sd["plain.weight_scale"] = torch.zeros(OUT_F, 1, dtype=torch.float32)
     with pytest.raises(RuntimeError, match="orphan"):
-        load_quantized_state_dict(_TinyModel(), sd)
+        load_quantized_state_dict(TinyDiT(), sd)
 
 
-# --------------------------------------------------------------------------- load_dit (central quant-aware loader)
-
-
-def test_load_dit_int8(tmp_path):
-    from thenoise.utils.loader import load_dit
-
-    p = tmp_path / "int8.safetensors"
-    _write(p, {
-        "model.diffusion_model.q.weight": torch.randint(-127, 127, (512, 256), dtype=torch.int8),
-        "model.diffusion_model.q.weight_scale": torch.rand(512, 1),
-        "model.diffusion_model.q.comfy_quant": torch.zeros(8, dtype=torch.uint8),
-        "model.diffusion_model.plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
-        "model.diffusion_model.plain.bias": torch.randn(512, dtype=torch.bfloat16),
-    })
-    model = _TinyModel()
-    out = load_dit(model, str(p), device="cpu", dtype=torch.bfloat16)
-    assert out is model
-    assert model.q._quantized is True
-    assert model.q.weight._qdata.dtype == torch.int8
-    assert model.plain.weight.dtype == torch.bfloat16
-
-
-def test_load_dit_fp8(tmp_path):
-    from thenoise.utils.loader import load_dit
-
-    p = tmp_path / "fp8.safetensors"
-    _write(p, {
-        "model.diffusion_model.q.weight": torch.randn(512, 256, dtype=torch.bfloat16).to(torch.float8_e4m3fn),
-        "model.diffusion_model.q.weight_scale": torch.tensor(0.5, dtype=torch.float32),
-        "model.diffusion_model.q.comfy_quant": torch.zeros(8, dtype=torch.uint8),
-        "model.diffusion_model.plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
-        "model.diffusion_model.plain.bias": torch.randn(512, dtype=torch.bfloat16),
-    })
-    model = _TinyModel()
-    load_dit(model, str(p), device="cpu", dtype=torch.bfloat16)
-    assert model.q._quantized is True
-    assert model.q.weight._qdata.dtype == torch.float8_e4m3fn
-    assert model.q(x := torch.randn(4, 256, dtype=torch.bfloat16)).shape == (4, 512)
+# --------------------------------------------------------------- load_dit
 
 
 def test_load_dit_bf16(tmp_path):
-    from thenoise.utils.loader import load_dit
-
-    p = tmp_path / "bf16.safetensors"
-    _write(p, _bf16_sd())
-    model = _TinyModel()
-    load_dit(model, str(p), device="cpu", dtype=torch.bfloat16)
+    path = write_safetensors(tmp_path / "bf16.safetensors", bf16_tensors())
+    model = load_dit(TinyDiT(), path, device="cpu", dtype=torch.bfloat16)
     assert model.q._quantized is False
-    assert model.q.weight is not None  # bf16 layer assigned normally
     assert model.q.weight.dtype == torch.bfloat16
     assert model.plain.weight.dtype == torch.bfloat16
 
 
-def test_load_dit_key_map(tmp_path):
-    from thenoise.utils.loader import load_dit
+@pytest.mark.parametrize(
+    "kwargs", [{}, {"prefix": "model.diffusion_model."}], ids=["raw-keys", "wrapped-keys"]
+)
+def test_load_dit_int8_and_fp8(tmp_path, kwargs):
+    """Both quantized formats load, and the wrapper prefix is stripped."""
+    for weight_dtype in (torch.int8, torch.float8_e4m3fn):
+        path, _ = int8_checkpoint(
+            tmp_path / f"dit-{weight_dtype}.safetensors", weight_dtype=weight_dtype, **kwargs
+        )
+        model = load_dit(TinyDiT(), path, device="cpu", dtype=torch.bfloat16)
+        assert model.q._quantized is True
+        assert model.q.weight._qdata.dtype == weight_dtype
+        assert model.plain.weight.dtype == torch.bfloat16
+        assert model.q(_bf16_x()).shape == (4, OUT_F)
 
-    # ComfyUI's INT8 exporter stores norm ``scale`` params under ``weight``.
-    p = tmp_path / "int8.safetensors"
-    _write(p, {
-        "q.weight": torch.randint(-127, 127, (512, 256), dtype=torch.int8),
-        "q.weight_scale": torch.rand(512, 1),
-        "q.comfy_quant": torch.zeros(8, dtype=torch.uint8),
-        "norm.weight": torch.randn(512, dtype=torch.bfloat16),
-    })
-    model = _ScaleModel()
+
+@pytest.mark.parametrize("quantized", [False, True], ids=["bf16", "int8"])
+def test_load_dit_drop_keys_applies_on_both_paths(tmp_path, quantized):
+    """Unexpected leftover keys (e.g. Krea2's unused ``last.*``) are dropped."""
+    extra = {
+        "last.down.residual": torch.randn(16, dtype=torch.bfloat16),
+        "last.up.residual": torch.randn(16, dtype=torch.bfloat16),
+    }
+    tensors = (
+        int8_tensors(extra=extra) if quantized else bf16_tensors(extra=extra)
+    )
+    path = write_safetensors(tmp_path / "dit.safetensors", tensors)
+
+    model = TinyDiT()
+    # Without drop_keys the strict load would fail on the unexpected keys.
+    load_dit(model, path, device="cpu", dtype=torch.bfloat16, drop_keys=("last.down", "last.up"))
+    assert model.q._quantized is quantized
+    assert model.plain.weight.dtype == torch.bfloat16
+
+
+class _ScaleNorm(torch.nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.scale = torch.nn.Parameter(torch.ones(dim))
+
+
+class _ScaleModel(torch.nn.Module):
+    """A model whose norm parameter is called ``scale``, not ``weight``."""
+
+    def __init__(self):
+        super().__init__()
+        self.q = QuantizedLinear(IN_F, OUT_F)
+        self.norm = _ScaleNorm(OUT_F)
+
+
+def test_load_dit_key_map(tmp_path):
+    """ComfyUI's INT8 exporter stores norm ``scale`` params under ``weight``."""
+    path, _ = int8_checkpoint(
+        tmp_path / "int8.safetensors",
+        extra={"norm.weight": torch.randn(OUT_F, dtype=torch.bfloat16)},
+        drop=["plain.weight", "plain.bias"],
+    )
     key_map = lambda k: k[: -len(".weight")] + ".scale" if k.endswith("norm.weight") else k
-    load_dit(model, str(p), device="cpu", dtype=torch.bfloat16, key_map=key_map)
+    model = load_dit(_ScaleModel(), path, device="cpu", dtype=torch.bfloat16, key_map=key_map)
+
     assert model.q._quantized is True
     assert model.norm.scale.dtype == torch.bfloat16
 
 
-class _ScaleNorm(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.scale = nn.Parameter(torch.ones(dim))
-
-
-class _ScaleModel(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.q = QuantizedLinear(256, 512)
-        self.norm = _ScaleNorm(512)
-
-
-def test_load_dit_drop_keys_on_bf16(tmp_path):
-    from thenoise.utils.loader import load_dit
-
-    p = tmp_path / "bf16.safetensors"
-    sd = _bf16_sd()
-    sd["last.down.residual"] = torch.randn(16, dtype=torch.bfloat16)
-    sd["last.up.residual"] = torch.randn(16, dtype=torch.bfloat16)
-    _write(p, sd)
-    model = _TinyModel()
-    # Without drop_keys the strict load would fail on the unexpected keys.
-    load_dit(model, str(p), device="cpu", dtype=torch.bfloat16, drop_keys=("last.down", "last.up"))
-    assert model.q._quantized is False
-    assert model.plain.weight.dtype == torch.bfloat16
-
-
-def test_load_dit_drop_keys_on_int8(tmp_path):
-    from thenoise.utils.loader import load_dit
-
-    p = tmp_path / "int8.safetensors"
-    sd = {
-        "q.weight": torch.randint(-127, 127, (512, 256), dtype=torch.int8),
-        "q.weight_scale": torch.rand(512, 1),
-        "q.comfy_quant": torch.zeros(8, dtype=torch.uint8),
-        "plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
-        "plain.bias": torch.randn(512, dtype=torch.bfloat16),
-        "last.down.residual": torch.randn(16, dtype=torch.bfloat16),
-        "last.up.residual": torch.randn(16, dtype=torch.bfloat16),
-    }
-    _write(p, sd)
-    model = _TinyModel()
-    # drop_keys applies to the quantized path too.
-    load_dit(model, str(p), device="cpu", dtype=torch.bfloat16, drop_keys=("last.down", "last.up"))
-    assert model.q._quantized is True
-    assert model.plain.weight.dtype == torch.bfloat16
-
-
-class _BufModel(nn.Module):
-    """Model with an internal buffer not saved in the checkpoint."""
+class _BufModel(torch.nn.Module):
+    """Model with an internal buffer that is deliberately not in the checkpoint."""
 
     def __init__(self):
         super().__init__()
-        self.plain = nn.Linear(256, 512, bias=True)
+        self.plain = torch.nn.Linear(IN_F, OUT_F, bias=True)
         self.register_buffer("rope_seq", torch.zeros(128))
 
 
-def test_load_dit_expected_missing(tmp_path):
-    from thenoise.utils.loader import load_dit
-
-    p = tmp_path / "bf16.safetensors"
-    _write(p, {
-        "plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
-        "plain.bias": torch.randn(512, dtype=torch.bfloat16),
-    })
-    model = _BufModel()
-    load_dit(
-        model, str(p), device="cpu", dtype=torch.bfloat16,
-        expected_missing=("rope_seq",),
+def test_load_dit_expected_missing_keeps_the_buffer(tmp_path):
+    path = write_safetensors(
+        tmp_path / "bf16.safetensors",
+        {
+            "plain.weight": torch.randn(OUT_F, IN_F, dtype=torch.bfloat16),
+            "plain.bias": torch.randn(OUT_F, dtype=torch.bfloat16),
+        },
+    )
+    model = load_dit(
+        _BufModel(), path, device="cpu", dtype=torch.bfloat16, expected_missing=("rope_seq",)
     )
     assert model.plain.weight.dtype == torch.bfloat16
-    assert model.rope_seq.dtype == torch.float32  # buffer kept, not from checkpoint
+    assert model.rope_seq.dtype == torch.float32  # kept, not taken from the checkpoint
 
 
-def test_load_dit_expected_missing_mismatch_raises(tmp_path):
-    from thenoise.utils.loader import load_dit
-
-    p = tmp_path / "bf16.safetensors"
-    _write(p, {"plain.weight": torch.randn(512, 256, dtype=torch.bfloat16)})  # plain.bias missing
-    model = _BufModel()
+def test_load_dit_unexpected_missing_raises(tmp_path):
+    path = write_safetensors(
+        tmp_path / "bf16.safetensors",
+        {"plain.weight": torch.randn(OUT_F, IN_F, dtype=torch.bfloat16)},  # plain.bias missing
+    )
     with pytest.raises(RuntimeError, match="missing"):
         load_dit(
-            model, str(p), device="cpu", dtype=torch.bfloat16,
+            _BufModel(), path, device="cpu", dtype=torch.bfloat16,
             expected_missing=("rope_seq",),  # does not cover plain.bias
         )
-
-
-def _bf16_sd():
-    return {
-        "q.weight": torch.randn(512, 256, dtype=torch.bfloat16),
-        "plain.weight": torch.randn(512, 256, dtype=torch.bfloat16),
-        "plain.bias": torch.randn(512, dtype=torch.bfloat16),
-    }
-
-
-# --------------------------------------------------------------------------- real checkpoint (optional)
-
-@pytest.mark.skipif(
-    not os.path.exists("models/anima/split_files/diffusion_models/anima-turbo-v1.0-int8convrot.safetensors"),
-    reason="real INT8 Anima checkpoint not present",
-)
-def test_real_int8_checkpoint_is_detected():
-    from thenoise.models import resolve
-    assert resolve("models/anima/split_files/diffusion_models/anima-turbo-v1.0-int8convrot.safetensors") is not None
-    assert is_quantized_checkpoint("models/anima/split_files/diffusion_models/anima-turbo-v1.0-int8convrot.safetensors") is True

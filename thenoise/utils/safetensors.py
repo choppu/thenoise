@@ -158,11 +158,6 @@ class MemoryEfficientSafeOpen:
         dtype = self._get_torch_dtype(metadata["dtype"])
         shape = metadata["shape"]
 
-        # Handle special float8 types
-        if metadata["dtype"] in ["F8_E5M2", "F8_E4M3"]:
-            return self._convert_float8(byte_tensor, metadata["dtype"], shape)
-
-        # Standard conversion: view as target dtype and reshape
         return byte_tensor.view(dtype).reshape(shape)
 
     @staticmethod
@@ -194,30 +189,6 @@ class MemoryEfficientSafeOpen:
         if hasattr(torch, "float8_e4m3fn"):
             dtype_map["F8_E4M3"] = torch.float8_e4m3fn
         return dtype_map.get(dtype_str)
-
-    @staticmethod
-    def _convert_float8(byte_tensor, dtype_str, shape):
-        """Convert byte tensor to float8 format if supported.
-
-        Args:
-            byte_tensor (torch.Tensor): Raw byte tensor.
-            dtype_str (str): Float8 dtype string ("F8_E5M2" or "F8_E4M3").
-            shape (tuple): Target tensor shape.
-
-        Returns:
-            torch.Tensor: Tensor with float8 dtype.
-
-        Raises:
-            ValueError: If float8 type is not supported in current PyTorch version.
-        """
-        # Convert to specific float8 types if available
-        if dtype_str == "F8_E5M2" and hasattr(torch, "float8_e5m2"):
-            return byte_tensor.view(torch.float8_e5m2).reshape(shape)
-        elif dtype_str == "F8_E4M3" and hasattr(torch, "float8_e4m3fn"):
-            return byte_tensor.view(torch.float8_e4m3fn).reshape(shape)
-        else:
-            # Float8 not supported in this PyTorch version
-            raise ValueError(f"Unsupported float8 type: {dtype_str} (upgrade PyTorch to support float8 types)")
 
 # Generic wrapper prefixes that repackagings (e.g. ComfyUI's "diffusion_model"
 # export) prepend to *every* tensor name. Seen so far: ``net.`` (Anima base) and
