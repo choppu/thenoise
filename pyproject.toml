@@ -35,6 +35,7 @@ packages = [
     "thenoise",
     "thenoise.dit",
     "thenoise.dit.krea2",
+    "thenoise.dit.qwen_image",
     "thenoise.dit.anima",
     "thenoise.dit.zimage",
     "thenoise.dit.flux2",
@@ -52,6 +53,7 @@ packages = [
 "thenoise.dit.anima" = ["configs/**/*"]
 "thenoise.dit.zimage" = ["configs/**/*"]
 "thenoise.dit.krea2" = ["configs/**/*"]
+"thenoise.dit.qwen_image" = ["configs/**/*"]
 # Committed Sesqui latent upscaler weights.
 "thenoise.upscale" = ["weights/**/*"]
 # Web UI
