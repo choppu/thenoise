@@ -21,6 +21,8 @@ from transformers import Qwen2Tokenizer, Qwen2VLProcessor
 from thenoise.utils.loader import load_text_encoder_weights
 from thenoise.utils.setup_logging import setup_logging
 
+from PIL import Image
+
 setup_logging()
 import logging
 
@@ -165,6 +167,25 @@ def get_qwen_prompt_embeds(
     return _mask_and_stack(split_hidden_states, drop_idx)
 
 
+def _resize_for_vlm(image: Image.Image, max_pixels: int = 384 * 384) -> Image.Image:
+    """Scale a PIL image to fit within ``max_pixels`` (area-based, aspect-preserving).
+
+    The Qwen2.5-VL vision encoder tokenizes each 14x14 patch into image tokens that
+    are inserted at the ``<|image_pad|>`` placeholder of the prompt. Passing the
+    full-resolution edit image injects thousands of tokens, drowning out the short
+    edit instruction and overflowing the RoPE buffer. Comfy's
+    ``TextEncodeQwenImageEditPlus`` scales the vision image to 384x384 for the same
+    reason; we mirror that here.
+    """
+    w, h = image.size
+    scale = (max_pixels / (w * h)) ** 0.5
+    new_w = max(1, round(w * scale))
+    new_h = max(1, round(h * scale))
+    if (new_w, new_h) != (w, h):
+        return image.resize((new_w, new_h), Image.LANCZOS)
+    return image
+
+
 def get_qwen_prompt_embeds_with_image(
     vl_processor: Qwen2VLProcessor,
     vlm: Qwen2_5_VLForConditionalGeneration,
@@ -178,6 +199,9 @@ def get_qwen_prompt_embeds_with_image(
     prompt = [prompt] if isinstance(prompt, str) else prompt
     if image is not None and isinstance(image, list):
         image = image[0] if len(image) == 1 else image
+    if image is not None:
+        # Cap the vision tokens so the short edit instruction is not drowned out.
+        image = _resize_for_vlm(image)
     vl_image_inputs = [image] if image is not None else None
 
     txt = [prompt_template_encode.format(e) for e in prompt]
