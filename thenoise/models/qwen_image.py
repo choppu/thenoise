@@ -57,6 +57,10 @@ class QwenImageModel(DiffusionModel):
 
     supports_edit = True
 
+    # Qwen-Image uses separate ``to_q``/``to_k``/``to_v`` attention projections,
+    # so LoRA factors must NOT be fused into a single ``qkv``.
+    fused_attention = False
+
     @staticmethod
     def detect(f) -> bool:
         """True if this handle is a Qwen-Image DiT.
