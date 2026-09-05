@@ -30,6 +30,9 @@ dev = ["pytest"]
 # Download helpers in scripts/ (not needed at runtime).
 scripts = ["huggingface-hub>=0.34.3"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.setuptools]
 packages = [
     "thenoise",

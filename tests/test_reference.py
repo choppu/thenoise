@@ -1,24 +1,28 @@
 """Shared reference-latent editing infrastructure tests (no weights / no GPU).
 
 Covers the generic reference helpers (``thenoise.dit.reference``), the
-``PipelineCache`` reference stage, and the pipeline's edit caching — re-editing
-the same image with a different prompt must NOT re-encode it.
+``PipelineCache`` reference stage, and the edit path of the pipeline: size
+derivation, per-image reference caching and the rejections a user can hit.
 """
 from __future__ import annotations
 
+import pytest
 import torch
 from PIL import Image
 
-from thenoise.dit.reference import (
-    concat_reference,
-    slice_reference_output,
-)
-from thenoise.models.base import Conditioning, DiffusionModel
-from thenoise.models.config import GenerateRequest, ModelConfig, SamplingParams
+from conftest import EditingStubModel, StubModel
+from thenoise.dit.reference import concat_reference, slice_reference_output
+from thenoise.models.config import EncodePromptArgs, GenerateRequest
 from thenoise.pipeline import PipelineController
-from thenoise.samplers import Step
 from thenoise.upscale.pixel import PixelUpscalerManager
 from thenoise.utils.pipeline_cache import PipelineCache
+
+
+def _edit_controller(model=None):
+    return PipelineController(
+        model or EditingStubModel(),
+        PixelUpscalerManager(upscaler_dir="", device="cpu"),
+    )
 
 
 # ------------------------------------------------------------- reference helpers
@@ -68,217 +72,123 @@ def test_pipeline_cache_reference_cascade():
     assert c.decode_key is None
 
 
-# ------------------------------------------------------------- edit caching
+# ---------------------------------------------------------------- edit rejections
 
 
-class _StubEditModel(DiffusionModel):
-    """Minimal editing model: counts ``encode_reference`` calls."""
+def test_edit_rejects_a_model_without_edit_support():
+    """``edit()`` on a non-editing model must fail loudly, not generate."""
+    controller = _edit_controller(StubModel())  # supports_edit is False
+    assert not controller.model.supports_edit
 
-    name = "stub_edit"
-    supports_edit = True
-    DEFAULT_WIDTH = 64
-    DEFAULT_HEIGHT = 64
-    DEFAULT_STEPS = 4
-    DEFAULT_GUIDANCE_SCALE = 1.0
-    SAMPLER = "euler"
-
-    def __init__(self):
-        config = ModelConfig(
-            dit_path="x", vae_path="x", text_encoder_path="x",
-            device="cpu", dtype=torch.float32,
-        )
-        super().__init__(config=config)
-        self.encode_calls = 0
-        self.dit = torch.nn.Identity()
-
-    @staticmethod
-    def detect(f):
-        return False
-
-    def encode_reference(self, pixels):
-        self.encode_calls += 1
-        return pixels.unsqueeze(0).float()  # [1, C, H, W]
-
-    def encode_prompt(self, args):
-        return Conditioning(cond=torch.zeros(1, 8, 8), null=None)
-
-    def init_latents(self, params):
-        return torch.randn(1, 4, params.height // 8, params.width // 8)
-
-    def schedule(self, params):
-        return [
-            Step(t=torch.tensor([1.0 - i / params.steps]),
-                 delta=torch.tensor([1.0 / params.steps]))
-            for i in range(params.steps)
-        ]
-
-    def denoise_step(self, latents, t, cond, guidance_scale, i):
-        return torch.zeros_like(latents)
-
-    def decode(self, latents):
-        return torch.zeros(3, 64, 64)
-
-    def _upscale_format(self):
-        return "flux2"
+    with pytest.raises(ValueError, match="does not support image editing"):
+        controller.edit(GenerateRequest(prompt="p", image=Image.new("RGB", (8, 8))))
 
 
-def _edit_controller():
-    return PipelineController(_StubEditModel(), PixelUpscalerManager(upscaler_dir="", device="cpu"))
-
-
-class _SizeSpyModel(_StubEditModel):
-    """Records the resolved ``SamplingParams`` passed to ``init_latents``."""
-
-    def __init__(self):
-        super().__init__()
-        self.sizes = []
-
-    def init_latents(self, params):
-        self.sizes.append((params.width, params.height))
-        return super().init_latents(params)
-
-
-def test_edit_reuses_reference_for_same_image():
+def test_edit_requires_an_input_image():
     controller = _edit_controller()
-    img_a = Image.new("RGB", (64, 64), "red")
+    with pytest.raises(ValueError, match="requires an input image"):
+        controller.edit(GenerateRequest(prompt="p"))
 
-    controller.edit(GenerateRequest(prompt="p1", image=img_a, seed=1))
-    assert controller.model.encode_calls == 1
-
-    # Same image, different prompt -> reference reused (no re-encode).
-    controller.edit(GenerateRequest(prompt="p2", image=img_a, seed=2))
-    assert controller.model.encode_calls == 1
+    # An empty list is as good as no image at all.
+    with pytest.raises(ValueError, match="requires an input image"):
+        controller.edit(GenerateRequest(prompt="p", image=[]))
 
 
-def test_edit_reencodes_on_different_image():
-    controller = _edit_controller()
-    img_a = Image.new("RGB", (64, 64), "red")
-    img_b = Image.new("RGB", (64, 64), "blue")
-
-    controller.edit(GenerateRequest(prompt="p1", image=img_a, seed=1))
-    assert controller.model.encode_calls == 1
-    controller.edit(GenerateRequest(prompt="p1", image=img_b, seed=2))
-    assert controller.model.encode_calls == 2
+# ------------------------------------------------------------------ size handling
 
 
-def test_edit_rejects_unsupported_model():
-    from thenoise.models.base import DiffusionModel
-    from thenoise.models.anima import AnimaModel
-
-    # Anima is a real (non-editing) model; construct a bare adapter check via
-    # the class flag rather than instantiating (no weights needed).
-    assert not AnimaModel.supports_edit
-    assert DiffusionModel.supports_edit is False
-
-
-def test_edit_derives_size_from_image_resized_to_1024():
-    """No width/height -> first image resized to 1024 on its largest side.
+@pytest.mark.parametrize(
+    "images,expected",
+    [
+        # 2:1 landscape -> largest side 1024, height 512.
+        ([Image.new("RGB", (100, 50), "red")], (1024, 512)),
+        # 1:2 portrait -> largest side (height) 1024.
+        ([Image.new("RGB", (50, 100), "blue")], (512, 1024)),
+        # Multi-ref: the FIRST image sets the aspect ratio, the rest are ignored.
+        (
+            [Image.new("RGB", (100, 50), "red"), Image.new("RGB", (50, 100), "blue")],
+            (1024, 512),
+        ),
+    ],
+    ids=["landscape", "portrait", "multi-ref-first-wins"],
+)
+def test_edit_derives_size_from_the_image_at_1024(images, expected):
+    """No width/height -> the (first) image resized to 1024 on its largest side.
 
     The caller's request is left unmutated; the derived size is applied to a
     local copy only.
     """
-    controller = PipelineController(
-        _SizeSpyModel(), PixelUpscalerManager(upscaler_dir="", device="cpu")
-    )
-    # 2:1 landscape image -> largest side 1024, height 512.
-    img = Image.new("RGB", (100, 50), "red")
-    request = GenerateRequest(prompt="p", image=img, seed=1)
+    controller = _edit_controller()
+    request = GenerateRequest(prompt="p", image=images[0] if len(images) == 1 else images, seed=1)
     controller.edit(request)
+
+    assert controller.model.sizes == [expected]
     assert request.width is None and request.height is None
-    assert controller.model.sizes == [(1024, 512)]
 
 
-def test_edit_derives_size_from_image_portrait():
-    """Portrait image: largest side (height) resized to 1024."""
-    controller = PipelineController(
-        _SizeSpyModel(), PixelUpscalerManager(upscaler_dir="", device="cpu")
+def test_edit_explicit_width_height_are_used_and_kept_on_the_request():
+    controller = _edit_controller()
+    request = GenerateRequest(
+        prompt="p", image=Image.new("RGB", (100, 50), "red"), seed=1, width=128, height=64
     )
-    img = Image.new("RGB", (50, 100), "blue")  # 1:2 portrait
-    request = GenerateRequest(prompt="p", image=img, seed=1)
     controller.edit(request)
-    assert request.width is None and request.height is None
-    assert controller.model.sizes == [(512, 1024)]
 
-
-def test_edit_explicit_width_height_are_used():
-    """Explicit width/height override the image-derived size."""
-    controller = PipelineController(
-        _SizeSpyModel(), PixelUpscalerManager(upscaler_dir="", device="cpu")
-    )
-    img = Image.new("RGB", (100, 50), "red")
-    request = GenerateRequest(prompt="p", image=img, seed=1,
-                              width=128, height=64)
-    controller.edit(request)
     assert controller.model.sizes == [(128, 64)]
-    assert request.width == 128 and request.height == 64
+    assert (request.width, request.height) == (128, 64)
 
 
-def test_encode_prompt_receives_args_struct():
-    """The pipeline passes an EncodePromptArgs struct to encode_prompt."""
-    from thenoise.models.config import EncodePromptArgs
+# --------------------------------------------------------------- prompt plumbing
 
-    received = {}
 
-    class SpyModel(_StubEditModel):
-        def encode_prompt(self, args):
-            received["args"] = args
-            return Conditioning(cond=torch.zeros(1, 8, 8), null=None)
-
-    controller = PipelineController(SpyModel(), PixelUpscalerManager(upscaler_dir="", device="cpu"))
+def test_encode_prompt_receives_the_args_struct():
+    """The pipeline hands ``encode_prompt`` an ``EncodePromptArgs`` incl. the image."""
+    controller = _edit_controller()
     img = Image.new("RGB", (64, 64), "red")
-    controller.edit(GenerateRequest(prompt="p", negative_prompt="n",
-                                    image=img, seed=1, guidance_scale=4.0))
-    args = received["args"]
-    assert isinstance(args, EncodePromptArgs)
-    assert args.prompt == "p"
-    assert args.negative_prompt == "n"
-    assert args.guidance_scale == 4.0
-    assert args.image is img
-
-
-# ------------------------------------------------------------- multi-image
-
-
-def test_multi_edit_derives_size_from_first_image():
-    """Output resolution/aspect derive from the FIRST reference image (to 1024)."""
-    controller = PipelineController(
-        _SizeSpyModel(), PixelUpscalerManager(upscaler_dir="", device="cpu")
+    controller.edit(
+        GenerateRequest(prompt="p", negative_prompt="n", image=img, seed=1, guidance_scale=4.0)
     )
-    first = Image.new("RGB", (100, 50), "red")   # 2:1 landscape
-    second = Image.new("RGB", (50, 100), "blue")  # portrait (ignored for size)
-    request = GenerateRequest(prompt="p", image=[first, second], seed=1)
-    controller.edit(request)
-    # Largest side from the first image's aspect ratio (2:1 landscape) -> 1024.
-    assert controller.model.sizes == [(1024, 512)]
-    assert request.width is None and request.height is None
+
+    received = controller.model.encode_prompt_args
+    assert isinstance(received, EncodePromptArgs)
+    assert (received.prompt, received.negative_prompt) == ("p", "n")
+    assert received.guidance_scale == 4.0
+    assert received.image is img
 
 
-def test_multi_edit_encodes_each_reference_once():
-    """Each distinct ref image is VAE-encoded once (cached by content hash)."""
+# ------------------------------------------------------------- reference caching
+
+
+@pytest.mark.parametrize("as_list", [False, True], ids=["single", "one-element-list"])
+def test_edit_reuses_the_reference_for_the_same_image(as_list):
+    """A bare image and a one-element list are the same cache entry."""
+    controller = _edit_controller()
+    img = Image.new("RGB", (64, 64), "red")
+    wrap = (lambda i: [i]) if as_list else (lambda i: i)
+
+    controller.edit(GenerateRequest(prompt="p1", image=wrap(img), seed=1))
+    assert controller.model.calls["encode_reference"] == 1
+
+    # Same image, different prompt -> reference reused (no re-encode).
+    controller.edit(GenerateRequest(prompt="p2", image=wrap(img), seed=2))
+    assert controller.model.calls["encode_reference"] == 1
+
+    # A different image is a different reference.
+    controller.edit(GenerateRequest(prompt="p2", image=wrap(Image.new("RGB", (64, 64), "blue")), seed=2))
+    assert controller.model.calls["encode_reference"] == 2
+
+
+def test_multi_edit_encodes_each_reference_once_and_order_matters():
     controller = _edit_controller()
     img_a = Image.new("RGB", (64, 64), "red")
     img_b = Image.new("RGB", (64, 64), "blue")
 
     controller.edit(GenerateRequest(prompt="p1", image=[img_a, img_b], seed=1))
-    assert controller.model.encode_calls == 2
+    assert controller.model.calls["encode_reference"] == 2
 
-    # Same two images, different prompt -> refs reused (no re-encode).
+    # Same two images, different prompt -> refs reused.
     controller.edit(GenerateRequest(prompt="p2", image=[img_a, img_b], seed=2))
-    assert controller.model.encode_calls == 2
+    assert controller.model.calls["encode_reference"] == 2
 
-    # Reordering the refs changes the reference -> re-encode.
+    # Reordering the refs changes the packed reference -> re-encode both.
     controller.edit(GenerateRequest(prompt="p3", image=[img_b, img_a], seed=3))
-    assert controller.model.encode_calls == 4
-
-
-def test_multi_edit_single_image_equals_one_element_list():
-    """A bare single image and a one-element list are equivalent (both cache-hit)."""
-    controller = _edit_controller()
-    img = Image.new("RGB", (64, 64), "red")
-
-    controller.edit(GenerateRequest(prompt="p1", image=img, seed=1))
-    assert controller.model.encode_calls == 1
-
-    # Same image as a one-element list -> cache hit (no re-encode).
-    controller.edit(GenerateRequest(prompt="p2", image=[img], seed=2))
-    assert controller.model.encode_calls == 1
+    assert controller.model.calls["encode_reference"] == 4

@@ -1,7 +1,9 @@
 """Z-Image adapter tests (no real weights / no GPU needed).
 
-Covers the sampler schedule (sigma-based Step.t), the single-file text-encoder
-validation, tokenizer-directory discovery, and the default guidance-scale.
+Covers the sigma-based step schedule, the single-file text-encoder validation,
+tokenizer-directory discovery and the Flux (Z-Image) latent upscaler. Model
+defaults and the upscale-format registration are covered catalog-wide in
+``test_catalog.py``.
 """
 from __future__ import annotations
 
@@ -13,7 +15,6 @@ from thenoise.dit.zimage.utils import (
     find_zimage_tokenizer_dir,
     load_zimage_text_encoder,
 )
-from thenoise.models import ZImageModel
 
 
 def test_zimage_sigmas_are_static_shifted_grid_with_trailing_zero():
@@ -27,15 +28,6 @@ def test_zimage_sigmas_are_static_shifted_grid_with_trailing_zero():
     s = torch.linspace(1.0, 1.0 / 8, 8)
     expected = 3.0 * s / (1.0 + 2.0 * s)
     assert torch.allclose(sigmas[:-1], expected)
-
-
-def test_zimage_default_guidance_is_one():
-    # ComfyUI's "off" convention: guidance scale 1.0 means no CFG.
-    assert ZImageModel.DEFAULT_GUIDANCE_SCALE == 1.0
-
-
-def test_zimage_sampler_defaults_to_euler():
-    assert ZImageModel.SAMPLER == "euler"
 
 
 def test_text_encoder_rejects_non_safetensors(tmp_path):
@@ -75,18 +67,17 @@ def test_vendored_tokenizer_config_dir_exists():
 
 
 def test_zimage_upscale_format_is_flux():
-    # Z-Image uses the Flux VAE -> the affine shift/scale latent format is registered.
-    from thenoise.upscale import _UPSCALER_FORMATS
+    # Z-Image uses the Flux VAE -> the affine shift/scale latent format, whose
+    # constants must match the VAE's own decode normalization.
+    from thenoise.upscale import make_flux
+    from thenoise.vae import AutoencoderKLFlux
 
-    assert "flux" in _UPSCALER_FORMATS
-    assert _UPSCALER_FORMATS["flux"][1] == "upscaler_flux.safetensors"
-    # And the adapter declares the flux format for its upscale path.
-    assert ZImageModel._upscale_format is not None
+    adaptor = make_flux()
+    assert adaptor.scale == AutoencoderKLFlux.scaling_factor
+    assert adaptor.shift == AutoencoderKLFlux.shift_factor
 
 
 def test_flux_upscaler_loads_and_runs():
-    import torch
-
     from thenoise.upscale import load_latent_upscaler
 
     model, adaptor = load_latent_upscaler("flux", device="cpu", dtype=torch.bfloat16)
@@ -100,7 +91,6 @@ def test_flux_upscaler_loads_and_runs():
 
 def test_load_upscaler_rejects_unknown_format():
     import pytest
-    import torch
 
     from thenoise.upscale import load_latent_upscaler
 
