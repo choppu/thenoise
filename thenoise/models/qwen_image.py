@@ -10,11 +10,11 @@ from __future__ import annotations
 import logging
 
 import torch
-from transformers import Qwen2VLProcessor
 
 from thenoise.dit.qwen_image import models as qwen_models
 from thenoise.dit.qwen_image import sampling as qwen_sampling
 from thenoise.dit.qwen_image import utils as qwen_utils
+from thenoise.dit.qwen_image.models import build_txt_positions, build_video_positions
 from thenoise.models.base import (
     Conditioning,
     DiffusionModel,
@@ -22,7 +22,14 @@ from thenoise.models.base import (
     normalize_keys,
 )
 from thenoise.models.config import EncodePromptArgs, ModelConfig, SamplingParams
+from thenoise.utils.latents import pack_latents, unpack_latents
 from thenoise.utils.math import round_up
+from thenoise.utils.text_encoder import (
+    QWEN25_TOKENIZER_CONFIG_DIR,
+    load_qwen2_5_vl_model,
+    load_qwen2_5_vl_processor,
+    load_qwen2_tokenizer,
+)
 from thenoise.vae import load_qwen_vae
 
 logger = logging.getLogger(__name__)
@@ -79,16 +86,16 @@ class QwenImageModel(DiffusionModel):
         )
         self.dit.eval().requires_grad_(False)
 
-        tokenizer_dir = qwen_utils.TOKENIZER_CONFIG_DIR
+        tokenizer_dir = QWEN25_TOKENIZER_CONFIG_DIR
         logger.info("Loading Qwen2.5-VL text encoder from %s", config.text_encoder_path)
-        self.text_encoder = qwen_utils.load_qwen2_5_vl(
+        self.text_encoder = load_qwen2_5_vl_model(
             config.text_encoder_path, dtype=config.dtype, device=self.offload_device
         )
         self.text_encoder.eval().requires_grad_(False)
-        self.tokenizer = qwen_utils.load_qwen2_tokenizer(tokenizer_dir)
-        self.vl_processor = Qwen2VLProcessor.from_pretrained(tokenizer_dir, local_files_only=True)
+        self.tokenizer = load_qwen2_tokenizer(tokenizer_dir)
+        self.vl_processor = load_qwen2_5_vl_processor(self.tokenizer)
 
-        self.vae = load_qwen_vae(self.vae_path, device=self.device, disable_mmap=True)
+        self.vae = load_qwen_vae(self.vae_path, device=self.device)
         self.vae.eval().requires_grad_(False)
 
         self.memory.register("dit", self.dit)
@@ -136,20 +143,20 @@ class QwenImageModel(DiffusionModel):
         """Pack the canonical latent into DiT tokens and stash conditioning once.
 
         The reference latent (edit) is packed and concatenated into the DiT token
-        sequence; the DiT's ``img_shapes`` gains one entry per reference.
+        sequence; ``img_shapes`` gains one entry per reference and drives both the
+        precomputed RoPE positions and the ``zero_cond_t`` split index.
         """
         dev = torch.device(self.device)
-        x = qwen_utils.pack_latents(latents.to(device=dev, dtype=self.dtype))
+        x = pack_latents(latents.to(device=dev, dtype=self.dtype))
 
         self._txt = cond.cond.to(device=dev, dtype=self.dtype)
-        self._txt_mask = cond.cond_mask.to(device=dev, dtype=torch.long)
-        self._txt_seq_lens = [int(m.sum().item()) for m in self._txt_mask]
+        txt_len = int(cond.cond_mask.to(device=dev).sum().item())
         self._img_shapes = [(1, params.height // self._VAE_SCALE // 2, params.width // self._VAE_SCALE // 2)]
 
         if ref is not None:
             ref_tokens = []
             for ref_latent in ref:
-                ref_tokens.append(qwen_utils.pack_latents(ref_latent.to(device=dev, dtype=self.dtype)))
+                ref_tokens.append(pack_latents(ref_latent.to(device=dev, dtype=self.dtype)))
                 self._img_shapes.append(
                     (1, ref_latent.shape[-2] // 2, ref_latent.shape[-1] // 2)
                 )
@@ -157,12 +164,34 @@ class QwenImageModel(DiffusionModel):
         else:
             self._ref_tokens = None
 
+        null_len = None
         if cond.null is not None:
             self._null_txt = cond.null.to(device=dev, dtype=self.dtype)
-            self._null_mask = cond.null_mask.to(device=dev, dtype=torch.long)
-            self._null_seq_lens = [int(m.sum().item()) for m in self._null_mask]
+            null_len = int(cond.null_mask.to(device=dev).sum().item())
         else:
-            self._null_txt = self._null_mask = self._null_seq_lens = None
+            self._null_txt = None
+
+        # Precompute the RoPE frequencies once per prompt; they are independent of
+        # image/timestep and are reused across every denoise step. The image stream
+        # covers the concatenated base+ref tokens; the text stream uses a single
+        # index (``max_vid_index + j``) advanced across all three axes.
+        self.dit.pe_embedder.clear()
+        img_pos = build_video_positions(self._img_shapes, device=dev)
+        self.dit.pe_embedder.store("img", img_pos, dtype=self.dtype)
+        max_vid_index = max(max(h // 2, w // 2) for _, h, w in self._img_shapes)
+        txt_pos = build_txt_positions(max_vid_index, txt_len, device=dev)
+        self.dit.pe_embedder.store("txt", txt_pos, dtype=self.dtype)
+        if null_len is not None:
+            null_pos = build_txt_positions(max_vid_index, null_len, device=dev)
+            self.dit.pe_embedder.store("txt_uncond", null_pos, dtype=self.dtype)
+
+        # ``zero_cond_t`` zeroes the timestep on the reference tokens; the split
+        # point is the base image token count.
+        self._timestep_zero_index = (
+            self._img_shapes[0][0] * self._img_shapes[0][1] * self._img_shapes[0][2]
+            if self.zero_cond_t
+            else None
+        )
 
         return x
 
@@ -193,12 +222,18 @@ class QwenImageModel(DiffusionModel):
 
         with torch.no_grad(), torch.autocast(device_type=dev.type, dtype=self.dtype):
             pos = self.dit(
-                hidden_states, self._txt, t_full, self._img_shapes, self._txt_seq_lens
+                hidden_states, self._txt, t_full,
+                img_pe=self.dit.pe_embedder["img"],
+                txt_pe=self.dit.pe_embedder["txt"],
+                timestep_zero_index=self._timestep_zero_index,
             )
             pos = pos[:, : latents.shape[1], :]
             if guidance_scale > 1.0 and self._null_txt is not None:
                 neg = self.dit(
-                    hidden_states, self._null_txt, t_full, self._img_shapes, self._null_seq_lens
+                    hidden_states, self._null_txt, t_full,
+                    img_pe=self.dit.pe_embedder["img"],
+                    txt_pe=self.dit.pe_embedder["txt_uncond"],
+                    timestep_zero_index=self._timestep_zero_index,
                 )
                 neg = neg[:, : latents.shape[1], :]
                 v = neg + guidance_scale * (pos - neg)
@@ -214,7 +249,7 @@ class QwenImageModel(DiffusionModel):
 
     def finalize_latent(self, latents: torch.Tensor, params: SamplingParams) -> torch.Tensor:
         # Unpack the DiT tokens back to the canonical 4D latent.
-        return qwen_utils.unpack_latents(
+        return unpack_latents(
             latents, params.height // self._VAE_SCALE, params.width // self._VAE_SCALE
         )
 
@@ -233,7 +268,7 @@ class QwenImageModel(DiffusionModel):
         if method != "index":
             raise ValueError(f"unsupported ref_latents_method {method!r}; only 'index' is supported")
         dev = torch.device(self.device)
-        return qwen_utils.pack_latents(latents.to(device=dev, dtype=self.dtype)), None
+        return pack_latents(latents.to(device=dev, dtype=self.dtype)), None
 
     def _upscale_format(self) -> str:
         """Qwen-Image VAE -> Wan21 z-score latent format."""
