@@ -216,12 +216,11 @@ def test_is_quantized_checkpoint(tmp_path, tensors, expected):
         # with 64 at inference, NOT the default 256, or the images are garbage.
         (comfy_quant(convrot=True, groupsize=64), True, 64),
         # A layer whose in_features were not divisible by the group size is NOT
-        # ConvRot-rotated: inference must not rotate (default is convrot=true).
+        # ConvRot-rotated: inference must not rotate.
         (comfy_quant(convrot=False), False, 256),
-        # No marker at all keeps the default profile...
-        (None, True, 256),
-        # ...and so does an unparseable one.
-        (torch.zeros(8, dtype=torch.uint8), True, 256),
+        # No marker (or an unparseable one) is a pre-comfy_quant artifact.
+        (None, False, 256),
+        (torch.zeros(8, dtype=torch.uint8), False, 256),
     ],
     ids=["groupsize-64", "convrot-off", "no-marker", "unparseable-marker"],
 )

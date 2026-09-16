@@ -51,13 +51,13 @@ _COMFY_QUANT_SUFFIX = ".comfy_quant"
 
 
 def _build_int8_qt(qweight: torch.Tensor, scale: torch.Tensor, marker: dict) -> QuantizedTensor:
-    """Reconstruct a TensorWiseINT8Layout weight from stored int8 + per-row scale."""
+    """Reconstruct a TensorWiseINT8Layout weight from stored int8 + scale."""
     params = TensorWiseINT8Layout.Params(
         scale=scale,
         orig_dtype=torch.bfloat16,
         orig_shape=tuple(qweight.shape),
         is_weight=True,
-        convrot=bool(marker.get("convrot", True)),
+        convrot=bool(marker.get("convrot", False)),
         convrot_groupsize=marker.get("convrot_groupsize", 256),
     )
     return QuantizedTensor(qweight, "TensorWiseINT8Layout", params)
