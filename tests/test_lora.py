@@ -20,6 +20,7 @@ from thenoise.utils.lora import (
     _fuse_attention,
     _match_lora_keys,
     _normalize_lora_suffix,
+    _projection_scale,
     apply_lora_to_model,
     compute_lora_delta,
     undo_lora_on_model,
@@ -193,15 +194,28 @@ def test_match_lora_keys_returns_none(key, keys):
 # ------------------------------------------------------------ attention fusion
 
 
-def _qkv_lora(rank=2, in_f=4, out_f=6, prefix="blocks.0.attn."):
+def _qkv_lora(
+    rank: int = 2,
+    in_f: int = 4,
+    out_f: int = 6,
+    prefix: str = "blocks.0.attn.",
+    alphas: dict | None = None,
+    present: tuple = ("q", "k", "v"),
+) -> dict:
+    """Separate to_q/to_k/to_v factors, optionally with per-projection alphas."""
     keys = {}
     for i, which in enumerate(("q", "k", "v")):
+        if which not in present:
+            continue
         keys[f"{prefix}to_{which}.lora_A.weight"] = torch.arange(
             rank * in_f, dtype=torch.float32
         ).reshape(rank, in_f) + i
         keys[f"{prefix}to_{which}.lora_B.weight"] = torch.arange(
             out_f * rank, dtype=torch.float32
         ).reshape(out_f, rank) + 10 * i
+        alpha = None if alphas is None else alphas.get(which)
+        if alpha is not None:
+            keys[f"{prefix}to_{which}.alpha"] = torch.tensor(float(alpha))
     return keys
 
 
@@ -257,6 +271,95 @@ def test_fuse_attention_fused_delta_equals_the_stack_of_projection_deltas():
         CPU,
     )
     assert torch.equal(fused_delta, torch.cat(per_projection, dim=0))
+
+
+def test_fuse_attention_folds_each_projection_alpha():
+    """Per-projection ``alpha/rank`` must survive the fusion (ComfyUI semantics).
+
+    ComfyUI applies each projection separately with its own ``alpha/rank``; a
+    fused pair carries a single rank (``3r``), so the scales are folded into the
+    factors. Without that, a LoRA with ``alpha != rank`` silently comes out at
+    the wrong strength (the fused default ``3r/3r`` is always 1).
+    """
+    alphas = {"q": 8.0, "k": 2.0, "v": None}  # rank 2 -> scales 4.0, 1.0, 1.0
+    sd = _qkv_lora(alphas=alphas)
+    fused = _fuse_attention(sd)
+
+    per_projection = [
+        compute_lora_delta(
+            sd[f"blocks.0.attn.to_{w}.lora_A.weight"],
+            sd[f"blocks.0.attn.to_{w}.lora_B.weight"],
+            2.0 if alphas[w] is None else alphas[w],
+            1.0,
+            CPU,
+        )
+        for w in "qkv"
+    ]
+    a = fused["blocks.0.attn.qkv.lora_A.weight"]
+    fused_delta = compute_lora_delta(
+        a, fused["blocks.0.attn.qkv.lora_B.weight"], a.size(0), 1.0, CPU
+    )
+    assert torch.allclose(fused_delta, torch.cat(per_projection, dim=0), rtol=2e-2, atol=2e-2)
+
+    # The consumed alphas must not resurface as "unused keys" warnings.
+    assert not [k for k in fused if k.endswith(".alpha")]
+
+
+def test_fuse_attention_pads_missing_projections_with_zeros():
+    """A q-only attention LoRA lands on the q rows instead of raising KeyError."""
+    for present, alphas in ((("q",), None), (("k", "v"), {"k": 4.0, "v": 2.0})):
+        sd = _qkv_lora(alphas=alphas, present=present)
+        fused = _fuse_attention(sd)
+        a = fused["blocks.0.attn.qkv.lora_A.weight"]
+        b = fused["blocks.0.attn.qkv.lora_B.weight"]
+        # A keeps only the trained ranks; B always spans the full fused qkv height.
+        assert a.shape == (2 * len(present), 4)
+        assert b.shape == (18, 2 * len(present))
+
+        delta = compute_lora_delta(a, b, a.size(0), 1.0, CPU)
+        assert delta.shape == (18, 4)
+        for i, w in enumerate("qkv"):
+            if w in present:
+                alpha = 2.0 if alphas is None or alphas.get(w) is None else alphas[w]
+                expected = compute_lora_delta(
+                    sd[f"blocks.0.attn.to_{w}.lora_A.weight"],
+                    sd[f"blocks.0.attn.to_{w}.lora_B.weight"],
+                    alpha,
+                    1.0,
+                    CPU,
+                )
+                assert torch.allclose(delta[6 * i : 6 * i + 6], expected, rtol=2e-2, atol=2e-2)
+            else:
+                assert torch.equal(delta[6 * i : 6 * i + 6], torch.zeros(6, 4))
+
+
+def test_fuse_attention_skips_an_unlayable_subset(caplog):
+    """q+k with different output widths: the missing v slice is unknowable.
+
+    Better an explicit warning and untouched keys (reported unused) than a delta
+    written to the wrong rows of the fused projection.
+    """
+    sd = _qkv_lora(present=("q", "k"))
+    sd["blocks.0.attn.to_k.lora_B.weight"] = torch.ones(3, 2)
+    fused = _fuse_attention(sd)
+
+    assert set(fused) == set(sd)
+    assert not any("qkv" in k for k in fused)
+    assert "skipping qkv fusion" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "alpha,rank,expected",
+    [
+        (None, 8, 1.0),   # no alpha key -> ComfyUI's hardcoded 1.0 == rank/rank
+        (16.0, 8, 2.0),
+        (4.0, 8, 0.5),
+        (0.0, 8, 0.0),    # alpha 0 disables the LoRA in ComfyUI too
+    ],
+)
+def test_projection_scale_matches_comfy_alpha_rule(alpha, rank, expected):
+    sd = {} if alpha is None else {"x.alpha": torch.tensor(alpha)}
+    assert _projection_scale(sd, "x.alpha", rank) == expected
 
 
 def test_fuse_attention_is_a_noop_without_qkv_and_does_not_mutate():

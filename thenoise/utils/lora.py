@@ -83,16 +83,53 @@ def _match_lora_keys(
     return None
 
 
+_QKV_PROJECTIONS = ("q", "k", "v")
+
+
+def _projection_scale(
+    lora_sd: Dict[str, torch.Tensor],
+    alpha_key: str,
+    rank: int,
+) -> float:
+    """ComfyUI's per-projection scale ``alpha / rank`` (1.0 when no alpha key).
+
+    Matches ``comfy.weight_adapter.lora.LoRAAdapter.calculate_weight``, which
+    uses ``alpha / down.size(0)`` when a ``.alpha`` entry exists and exactly
+    ``1.0`` when it does not.
+    """
+    alpha = lora_sd.get(alpha_key)
+    if alpha is None:
+        return 1.0
+    return float(alpha.item()) / max(rank, 1)
+
+
 def _fuse_attention(lora_sd: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     """Fuse separate ``to_q``/``to_k``/``to_v`` LoRA factors into ``qkv``.
 
     Diffusers/ComfyUI attention LoRAs train separate q/k/v projections; models
     with a fused ``qkv`` projection expect the factors combined as
     ``A_qkv = cat([A_q; A_k; A_v], dim=0)`` and
-    ``B_qkv = block_diag(B_q, B_k, B_v)``. The fused rank is ``3r``, so the
-    default scale ``alpha/dim`` with ``alpha = down.size(0) = 3r`` evaluates to
-    1, matching each original projection's ``r/r`` scaling. No-op if the LoRA
-    has no separate q/k/v factors. The input is not mutated.
+    ``B_qkv = block_diag(B_q, B_k, B_v)``, with each projection's block placed
+    at its own row offset in the fused weight.
+
+    A fused pair carries a single rank (``3r``), so one shared ``alpha/dim``
+    cannot reproduce three per-projection scales. Each projection's
+    ``alpha / rank`` is therefore folded into its ``lora_A`` factor before
+    concatenating (and its ``.alpha`` key consumed), which makes the fused
+    delta exactly the stack of the three separate merges — including LoRAs
+    whose alpha differs from the rank, or whose projections have different
+    alphas. When no alpha key is present the scale is 1 and nothing is folded,
+    so the factors are passed through bit-identically.
+
+    LoRAs that train only a subset of q/k/v are fused with zero rows in
+    ``B_qkv`` for the missing projections (they contribute no rank), which
+    requires the projections to share one output width — the equal-thirds
+    layout every fused ``qkv`` module uses. Anything that cannot be laid out
+    unambiguously (incomplete factor pairs, or missing projections alongside
+    differing output widths) is left untouched and logged instead of being
+    written to the wrong rows.
+
+    No-op if the LoRA has no separate q/k/v factors. The input is not mutated.
     """
     groups = set()
     for k in lora_sd:
@@ -103,17 +140,81 @@ def _fuse_attention(lora_sd: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]
         return lora_sd
 
     new_sd = dict(lora_sd)
-    for prefix in groups:
-        # Fuse q/k/v factors into a single qkv projection (rows q, k, v).
-        for side in ("A", "B"):
-            parts = [
-                new_sd.pop(f"{prefix}to_{p}.lora_{side}.weight")
-                for p in ("q", "k", "v")
-            ]
-            if side == "A":
-                new_sd[f"{prefix}qkv.lora_A.weight"] = torch.cat(parts, dim=0)
-            else:
-                new_sd[f"{prefix}qkv.lora_B.weight"] = torch.block_diag(*parts)
+    for prefix in sorted(groups):
+        factors = {
+            p: (
+                new_sd.get(f"{prefix}to_{p}.lora_A.weight"),
+                new_sd.get(f"{prefix}to_{p}.lora_B.weight"),
+            )
+            for p in _QKV_PROJECTIONS
+        }
+        present = [
+            p
+            for p in _QKV_PROJECTIONS
+            if factors[p][0] is not None and factors[p][1] is not None
+        ]
+        if not present:
+            logger.warning(
+                "LoRA %s has no complete to_q/to_k/to_v factor pair; skipping qkv fusion",
+                prefix,
+            )
+            continue
+
+        out_rows = {p: factors[p][1].size(0) for p in present}
+        in_dims = {p: factors[p][0].size(1) for p in present}
+        missing = [p for p in _QKV_PROJECTIONS if p not in present]
+        in_ok = len(set(in_dims.values())) == 1
+        out_ok = not missing or len(set(out_rows.values())) == 1
+        if not (in_ok and out_ok):
+            logger.warning(
+                "LoRA %s has mismatched q/k/v factor shapes (%s present, %s differ); "
+                "skipping qkv fusion",
+                prefix,
+                "/".join(present),
+                "input" if not in_ok else "output",
+            )
+            continue
+
+        slice_rows = out_rows[present[0]]
+        rows = {p: out_rows.get(p, slice_rows) for p in _QKV_PROJECTIONS}
+
+
+        blocks = []
+        rank_total = 0
+        for p in _QKV_PROJECTIONS:
+            if p not in present:
+                blocks.append((rows[p], 0, None, None))
+                continue
+            a, b = factors[p]
+            alpha_key = f"{prefix}to_{p}.alpha"
+            scale = _projection_scale(new_sd, alpha_key, a.size(0))
+            if scale != 1.0:
+                a = (a.to(torch.float32) * scale).to(a.dtype)
+            new_sd.pop(alpha_key, None)
+            blocks.append((rows[p], a.size(0), a, b))
+            rank_total += a.size(0)
+            new_sd.pop(f"{prefix}to_{p}.lora_A.weight", None)
+            new_sd.pop(f"{prefix}to_{p}.lora_B.weight", None)
+
+        a_dtype, a_device = factors[present[0]][0].dtype, factors[present[0]][0].device
+        b_dtype, b_device = factors[present[0]][1].dtype, factors[present[0]][1].device
+        a_fused = torch.zeros(
+            rank_total, in_dims[present[0]], dtype=a_dtype, device=a_device
+        )
+        b_fused = torch.zeros(
+            sum(rows.values()), rank_total, dtype=b_dtype, device=b_device
+        )
+
+        row_off = col_off = 0
+        for rows_p, rank_p, a, b in blocks:
+            if a is not None:
+                a_fused[col_off : col_off + rank_p] = a
+                b_fused[row_off : row_off + rows_p, col_off : col_off + rank_p] = b
+                col_off += rank_p
+            row_off += rows_p
+
+        new_sd[f"{prefix}qkv.lora_A.weight"] = a_fused
+        new_sd[f"{prefix}qkv.lora_B.weight"] = b_fused
     return new_sd
 
 
