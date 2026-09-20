@@ -4,8 +4,19 @@
 # slice of each 5D weight), the per-chunk ``time_conv`` layers and ``feat_cache``
 # streaming are removed, and the parameter-free ``AvgDown3D``/``DupUp3D``
 # shortcuts are folded to their exact one-frame behaviour (see the classes).
-# Net effect: [B, 3, H, W] in [-1, 1] <-> [B, 48, H/16, W/16] latents
+# Net effect: [B, C, H, W] in [-1, 1] <-> [B, z_dim, H/16, W/16] latents
 # (2x2 patchify + 8x spatial compression), matching the reference's 4D path.
+#
+# Two shipped checkpoints share this layout, and ``load_wan22_vae`` infers which
+# one it is from the file:
+#
+#   * Wan 2.2 VAE    — 48ch latent, RGB, 2x2 patchify, temporal kernel 3
+#   * Qwen-Image 2.1 — 64ch latent, RGBA, no patchify, temporal kernel 1
+#
+# The pixel channel count is the one thing that is not architecture: Qwen-Image
+# 2.1's VAE takes and returns 4 channels, so ``pixel_channels`` is part of the
+# interface and the encode/decode boundary pads an opaque alpha onto RGB input
+# (and keeps the alpha on output).
 #
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 #
@@ -50,6 +61,45 @@ def unpatchify(x: torch.Tensor, patch_size: int) -> torch.Tensor:
     return rearrange(x, "b (c r q) h w -> b c (h q) (w r)", q=patch_size, r=patch_size)
 
 
+# Elements per strip of rows (16.7M -> a 32MB bf16 buffer). Stripping bounds
+# cuDNN's conv workspace: a single full-size conv activation at 4K costs GBs, and
+# the library picks its algorithm from the tensor it is handed.
+STRIP_ELEMS = 2**24
+
+
+def strip_apply(fn, x: torch.Tensor, scale: int = 1, halo: int = 1, out: torch.Tensor | None = None):
+    """Apply a spatial ``fn`` to ``x`` in horizontal strips of rows.
+
+    ``scale`` is the height multiplier of ``fn`` (2 for a 2x upsample), ``halo``
+    is the number of neighbouring rows fed in on each side — one per 3x3 conv in
+    ``fn``, so the kept rows are bit-identical to the unstripped call. The strip
+    count is chosen from the element count, so small activations (and every
+    encoder pass at normal resolutions) take the plain ``fn(x)`` path.
+
+    ``out`` is a preallocated result to ADD into (used to fold an upsample
+    shortcut into a buffer that already exists instead of allocating a second
+    full-size one).
+    """
+    n = -(-x.numel() * scale * scale // STRIP_ELEMS)
+    if n <= 1 and out is None:
+        return fn(x)
+    add = out is not None
+    size = x.shape[-2]
+    step = -(-size // n)
+    for a in range(0, size, step):
+        b = min(size, a + step)
+        lo = max(0, a - halo)
+        y = fn(x.narrow(-2, lo, min(size, b + halo) - lo)).narrow(-2, (a - lo) * scale, (b - a) * scale)
+        if out is None:
+            out = y.new_empty(*y.shape[:-2], size * scale, y.shape[-1])
+        dst = out.narrow(-2, a * scale, (b - a) * scale)
+        if add:
+            dst.add_(y)
+        else:
+            dst.copy_(y)
+    return out
+
+
 class Wan22RMSNorm(nn.Module):
     """RMS norm over the channel dim: ``x * rsqrt(mean(x^2)) * sqrt(C) * gamma``."""
 
@@ -80,10 +130,9 @@ class Wan22ResidualBlock(nn.Module):
         self.shortcut = nn.Conv2d(in_dim, out_dim, 1) if in_dim != out_dim else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        h = self.shortcut(x)
-        for layer in self.residual:
-            x = layer(x)
-        return x + h
+        # The whole block in strips: its intermediates never exist at full size
+        # (``halo=2`` covers the two 3x3 convs, so the result is exact).
+        return strip_apply(lambda s: self.residual(s).add_(self.shortcut(s)), x, halo=2)
 
 
 class Wan22AttentionBlock(nn.Module):
@@ -112,10 +161,16 @@ class Wan22AttentionBlock(nn.Module):
 
 
 class Wan22Resample(nn.Module):
-    """2x spatial up/down sampling (the v2_2 Resample's time_conv never fires on one frame)."""
+    """2x spatial up/down sampling.
+
+    The v2_2 ``time_conv`` layers are dropped: the reference runs them only on its
+    streaming (``feat_cache``) path, never on the single-image one, so they carry
+    no information in the 2D fold (the loader drops their weights).
+    """
 
     def __init__(self, dim: int, upsample: bool) -> None:
         super().__init__()
+        self.upsample = upsample
         if upsample:
             self.resample = nn.Sequential(
                 nn.Upsample(scale_factor=2, mode="nearest-exact"),
@@ -125,6 +180,9 @@ class Wan22Resample(nn.Module):
             self.resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), nn.Conv2d(dim, dim, 3, stride=(2, 2)))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.upsample:
+            # nearest-exact + 3x3 conv: one halo row keeps the strips exact
+            return strip_apply(self.resample, x, scale=2)
         return self.resample(x)
 
 
@@ -225,7 +283,9 @@ class Wan22UpBlock(nn.Module):
         for layer in self.upsamples:
             h = layer(h)
         if self.avg_shortcut is not None:
-            h = h + self.avg_shortcut(x)
+            # add the shortcut straight into the block's own buffer rather than
+            # through a second full-size temporary
+            h = strip_apply(self.avg_shortcut, x, scale=self.avg_shortcut.factor_s, halo=0, out=h)
         return h
 
 
@@ -326,8 +386,13 @@ class Wan22Decoder(nn.Module):
         return x
 
 
-# Official Wan 2.2 latent stats (48ch): latents are stored as (mu - mean) * inv_std
-# and inverted before decoding (from the official release's Wan2_2_VAE wrapper).
+# ---------------------------------------------------------------------------
+# Latent normalisation (latents are stored as ``(mu - mean) / std`` and the
+# inverse is applied before decoding). Keyed by ``z_dim``, which is what the
+# loader has to go on when it picks them for a checkpoint.
+# ---------------------------------------------------------------------------
+
+# Official Wan 2.2 (48ch), from the release's ``Wan2_2_VAE`` wrapper.
 WAN22_LATENTS_MEAN = [
     -0.2289, -0.0052, -0.1323, -0.2339, -0.2799, 0.0174, 0.1838, 0.1557,
     -0.1382, 0.0542, 0.2813, 0.0891, 0.1570, -0.0098, 0.0375, -0.1825,
@@ -346,11 +411,52 @@ WAN22_LATENTS_STD = [
     0.3971, 1.0600, 0.3943, 0.5537, 0.5444, 0.4089, 0.7468, 0.7744,
 ]
 
+# Qwen-Image 2.1 (64ch), from the same source ComfyUI ships as its latent format.
+QWEN_IMAGE21_LATENTS_MEAN = [
+    0.5126, 0.7721, -0.0631, 1.3506, -0.7855, -2.1025, -0.3458, 1.3722,
+    1.8873, -1.7177, -0.6510, 0.2732, 0.7562, -0.6163, -1.0277, 3.8363,
+    2.0210, 0.0472, 0.9320, 2.0087, 2.4954, -0.1391, -1.4249, 1.8464,
+    -0.5236, 1.2826, 3.7046, -1.3035, 2.7286, -1.4518, -1.9036, -1.9955,
+    -0.0342, -1.0265, -0.7636, 3.0555, 0.0746, -3.0751, -0.1076, 1.7376,
+    -1.0914, -1.9435, -0.2784, -1.3680, 0.4809, -0.4433, 0.3764, 0.5729,
+    -2.0595, 1.0960, -1.3260, -2.0211, -5.0179, 0.5275, 4.0162, 1.8505,
+    0.3026, 1.9373, 1.4937, 0.2632, 0.5547, -1.7121, -0.1562, 0.0304,
+]
+
+QWEN_IMAGE21_LATENTS_STD = [
+    3.2001, 3.2936, 3.4321, 3.0091, 3.1061, 4.0379, 4.0705, 3.7910,
+    3.0785, 3.6500, 3.9308, 3.0904, 2.8778, 3.7675, 3.7320, 5.0756,
+    3.2864, 4.0397, 3.1317, 4.0443, 2.9249, 3.9454, 3.0988, 4.2489,
+    3.4896, 3.8513, 3.9323, 3.4719, 3.7498, 4.2830, 3.5694, 4.2467,
+    3.9037, 3.2947, 5.0770, 3.5075, 3.2700, 3.4767, 2.8063, 5.1125,
+    3.5327, 4.7833, 3.1286, 4.1819, 3.8527, 3.8312, 3.5605, 4.3875,
+    3.9624, 4.0168, 3.5643, 4.0550, 5.5614, 4.2963, 4.4080, 3.4959,
+    3.8747, 3.7608, 3.5735, 3.1490, 3.7662, 3.6746, 3.4563, 3.8161,
+]
+
+#: z_dim -> (mean, std). A new checkpoint of this family is one more entry.
+LATENT_STATS: dict[int, tuple[list[float], list[float]]] = {
+    48: (WAN22_LATENTS_MEAN, WAN22_LATENTS_STD),
+    64: (QWEN_IMAGE21_LATENTS_MEAN, QWEN_IMAGE21_LATENTS_STD),
+}
+
+#: Every variant of this family compresses 16x (patchify x 2 per downsample stage).
+PIXEL_COMPRESSION = 16
+
 
 class AutoencoderKLWan22(nn.Module):
-    """Wan 2.2 VAE for still images; defaults match the released weights
-    (dim=160, dec_dim=256, z_dim=48, 2x2 patchify). The per-stage temporal
-    flags only pick the channel grouping of the parameter-free shortcuts."""
+    """Wan 2.2 family VAE for still images.
+
+    Defaults match the released Wan 2.2 weights (dim=160, dec_dim=256, z_dim=48,
+    2x2 patchify, RGB); the Qwen-Image 2.1 VAE is the same module with
+    ``z_dim=64``, five ``dim_mult`` stages, ``patch_size=1`` and
+    ``image_channels=4`` (RGBA). The per-stage temporal flags only pick the
+    channel grouping of the parameter-free shortcuts.
+
+    ``image_channels`` is the VAE's own pixel width and part of the interface:
+    the encode/decode boundary pads an opaque alpha onto RGB input when the VAE
+    wants four channels, and decoding hands back ``image_channels`` channels.
+    """
 
     def __init__(
         self,
@@ -364,18 +470,26 @@ class AutoencoderKLWan22(nn.Module):
         patch_size: int = 2,
         latents_mean: list[float] | None = None,
         latents_std: list[float] | None = None,
+        pad_channel_value: float = 1.0,
     ) -> None:
         super().__init__()
         dim_mult = list(dim_mult)
+        if (latents_mean is None) != (latents_std is None):
+            raise ValueError("pass both latents_mean and latents_std, or neither")
         if latents_mean is None:
-            latents_mean = WAN22_LATENTS_MEAN
-        if latents_std is None:
-            latents_std = WAN22_LATENTS_STD
+            if z_dim not in LATENT_STATS:
+                raise ValueError(
+                    f"no latent statistics for z_dim={z_dim}; pass latents_mean/latents_std "
+                    f"(known: {sorted(LATENT_STATS)})"
+                )
+            latents_mean, latents_std = LATENT_STATS[z_dim]
         assert len(latents_mean) == z_dim and len(latents_std) == z_dim
 
         self.dim_mult = dim_mult
         self.z_dim = z_dim
+        self.image_channels = image_channels
         self.patch_size = patch_size
+        self.pad_channel_value = pad_channel_value
         # Hoisted buffers so .to(device) moves them with the module.
         self.register_buffer("_latents_mean", torch.tensor(latents_mean).view(1, z_dim, 1, 1), persistent=False)
         self.register_buffer("_latents_inv_std", (1.0 / torch.tensor(latents_std)).view(1, z_dim, 1, 1), persistent=False)
@@ -400,33 +514,144 @@ class AutoencoderKLWan22(nn.Module):
         return next(self.encoder.parameters()).device
 
     @property
-    def compression(self) -> int:
+    def pixel_channels(self) -> int:
+        """Pixel channels the VAE consumes/emits (3 = RGB, 4 = RGBA)."""
+        return self.image_channels
+
+    @property
+    def spatial_compression(self) -> int:
         """Spatial compression: patchify x 2^(stages-1), e.g. 2 x 8 = 16."""
         return self.patch_size * 2 ** (len(self.dim_mult) - 1)
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        """Images in [-1, 1] -> unnormalised latent means (deterministic)."""
+        """Pixels in [-1, 1] (the VAE's own channel count) -> unnormalised means."""
         x = patchify(x, self.patch_size)
         return self.conv1(self.encoder(x)).chunk(2, dim=1)[0]
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
-        """Latents -> unclamped pixels in ~[-1, 1] (16x upsample)."""
+        """Latents -> unclamped pixels in ~[-1, 1] (``spatial_compression`` up)."""
         x = self.decoder(self.conv2(z))
         return unpatchify(x, self.patch_size)
 
+    def _match_pixels(self, x: torch.Tensor) -> torch.Tensor:
+        """Fit a pixel tensor to the VAE's channel count.
+
+        RGB into an RGBA VAE gets an opaque alpha (``pad_channel_value``); more
+        channels than the VAE wants are truncated to RGB. Anything else is a
+        caller error rather than a silent guess.
+        """
+        want = self.pixel_channels
+        got = x.shape[1]
+        if got == want:
+            return x
+        if got == 3 and want == 4:
+            return F.pad(x, (0, 0, 0, 0, 0, 1), value=self.pad_channel_value)
+        if got > 3 and want == 3:
+            return x[:, :3]
+        raise ValueError(f"expected {want} pixel channels for this VAE, got {got}")
+
     def encode_pixels_to_latents(self, pixels: torch.Tensor) -> torch.Tensor:
-        """Pixels in [-1, 1] -> normalised latents."""
-        latents = self.encode(pixels.to(self.device, self.dtype))
+        """Pixels in [-1, 1] (3 or ``pixel_channels``) -> normalised latents."""
+        latents = self.encode(self._match_pixels(pixels.to(self.device, self.dtype)))
         mean = self._latents_mean.to(latents.device, latents.dtype)
         inv_std = self._latents_inv_std.to(latents.device, latents.dtype)
         return (latents - mean) * inv_std
 
     def decode_to_pixels(self, latents: torch.Tensor) -> torch.Tensor:
-        """Normalised latents -> pixels clamped to [-1, 1]."""
+        """Normalised latents -> pixels clamped to [-1, 1] (``pixel_channels``)."""
         latents = latents.to(self.device, self.dtype)
         mean = self._latents_mean.to(latents.device, latents.dtype)
         inv_std = self._latents_inv_std.to(latents.device, latents.dtype)
         return self.decode(latents / inv_std + mean).clamp(-1.0, 1.0)
+
+
+# --------------------------------------------------------------------------- the loader
+
+
+def _infer_arch(state_dict: dict, vae_path: str) -> dict:
+    """Recover the architecture knobs a Wan 2.2 family checkpoint was built with.
+
+    Only the names and shapes are read. The two shipped variants differ in width,
+    depth (three vs four downsample stages), latent width and pixel channels, and
+    all of it is recoverable: stage widths from the residual blocks, the number of
+    residual blocks by counting them, the pixel patch from the 16x compression the
+    family always delivers (``patch_size x 2^stages``), the per-stage temporal
+    flags from the video-only ``time_conv`` layers the image path never runs.
+    """
+    enc_conv = state_dict["encoder.conv1.weight"]
+    if enc_conv.dim() != 5:
+        raise ValueError(f"{vae_path}: expected the 5D video layout, got {tuple(enc_conv.shape)}")
+    dim = enc_conv.shape[0]
+    dec_dim = state_dict["decoder.head.0.gamma"].shape[0]
+    z_dim = state_dict["conv2.weight"].shape[0]
+
+    # Residual blocks per stage: the reference puts the same count in every stage.
+    num_res_blocks = 0
+    while f"encoder.downsamples.0.downsamples.{num_res_blocks}.residual.2.weight" in state_dict:
+        num_res_blocks += 1
+    if num_res_blocks == 0:
+        raise ValueError(f"'encoder.downsamples.0.downsamples.0.residual.2.weight' not found in {vae_path}")
+
+    # A stage's last residual block ends on that stage's output width.
+    widths = []
+    i = 0
+    while f"encoder.downsamples.{i}.downsamples.{num_res_blocks - 1}.residual.2.weight" in state_dict:
+        w = state_dict[f"encoder.downsamples.{i}.downsamples.{num_res_blocks - 1}.residual.2.weight"].shape[0]
+        if w % dim:
+            raise ValueError(f"stage width {w} is not a multiple of dim {dim} in {vae_path}")
+        widths.append(w // dim)
+        i += 1
+    if not widths:
+        raise ValueError(f"'encoder.downsamples.0.?' not found in {vae_path} (not a Wan 2.2 VAE?)")
+    dim_mult = widths
+
+    # The family compresses 16x, so whatever the stages do not cover is patchify.
+    stages = len(dim_mult) - 1
+    if PIXEL_COMPRESSION % 2**stages:
+        raise ValueError(f"{vae_path}: {stages} downsample stages cannot make a 16x compression")
+    patch_size = PIXEL_COMPRESSION // 2**stages
+
+    in_channels = enc_conv.shape[1]
+    out_channels = state_dict["decoder.head.2.weight"].shape[0]
+    if in_channels != out_channels or in_channels % (patch_size * patch_size):
+        raise ValueError(
+            f"unexpected in/out channels {in_channels}/{out_channels} with patch_size={patch_size} in {vae_path}"
+        )
+    image_channels = in_channels // (patch_size * patch_size)
+
+    # Per-stage temporal flags: recorded by each resample's video-only time_conv.
+    enc_flags = [
+        f"encoder.downsamples.{i}.downsamples.{num_res_blocks}.time_conv.weight" in state_dict
+        for i in range(stages)
+    ]
+    dec_flags = [
+        f"decoder.upsamples.{i}.upsamples.{num_res_blocks + 1}.time_conv.weight" in state_dict
+        for i in range(stages)
+    ]
+    if dec_flags != enc_flags[::-1]:
+        raise ValueError(f"inconsistent temporal flags in {vae_path}: encoder {enc_flags}, decoder {dec_flags}")
+
+    if state_dict["encoder.head.0.gamma"].shape[0] != dim * dim_mult[-1]:
+        raise ValueError(
+            f"encoder width {state_dict['encoder.head.0.gamma'].shape[0]} != dim*mult[-1] {dim * dim_mult[-1]}"
+        )
+    if state_dict["decoder.conv1.weight"].shape[0] != dec_dim * dim_mult[-1]:
+        raise ValueError(
+            f"decoder width {state_dict['decoder.conv1.weight'].shape[0]} != dec_dim*mult[-1] {dec_dim * dim_mult[-1]}"
+        )
+    if tuple(state_dict["conv1.weight"].shape) != (z_dim * 2, z_dim * 2, 1, 1, 1):
+        raise ValueError(f"unexpected conv1 shape {tuple(state_dict['conv1.weight'].shape)}")
+
+    return {
+        "dim": dim,
+        "dec_dim": dec_dim,
+        "z_dim": z_dim,
+        "dim_mult": dim_mult,
+        "num_res_blocks": num_res_blocks,
+        "temperal_downsample": enc_flags,
+        "image_channels": image_channels,
+        "patch_size": patch_size,
+    }
 
 
 def load_wan22_vae(
@@ -436,11 +661,16 @@ def load_wan22_vae(
     latents_mean: list[float] | None = None,
     latents_std: list[float] | None = None,
 ) -> AutoencoderKLWan22:
-    """Load a Wan 2.2 VAE (ComfyUI ``vae2_2`` layout) for single-frame use.
-    The architecture is inferred from the checkpoint, then the video weights
-    are collapsed to 2D: drop ``time_conv``, keep the last time slice of 5D
-    convs (causal padding puts the single frame at the end), squeeze 4D gammas."""
-    logger.info("Loading Wan 2.2 VAE from %s", vae_path)
+    """Load a Wan 2.2 family VAE (ComfyUI ``vae2_2`` layout) for single-frame use.
+
+    The architecture is inferred from the checkpoint (see :func:`_infer_arch`) and
+    the latent statistics are picked from its ``z_dim`` unless passed explicitly,
+    so both the 48ch Wan 2.2 and the 64ch RGBA Qwen-Image 2.1 file load through
+    here. The video weights are then collapsed to 2D: drop ``time_conv``, keep the
+    last time slice of 5D convs (causal padding puts the single frame at the end),
+    squeeze 4D gammas.
+    """
+    logger.info("Loading Wan 2.2 family VAE from %s", vae_path)
     state_dict = load_safetensors(vae_path, device=device)
 
     required = (
@@ -451,62 +681,17 @@ def load_wan22_vae(
         "encoder.head.0.gamma",
         "encoder.head.2.weight",
         "decoder.middle.0.residual.0.gamma",
+        "decoder.head.0.gamma",
         "decoder.head.2.weight",
     )
     for key in required:
         if key not in state_dict:
             raise ValueError(f"'{key}' not found in {vae_path} (not a Wan 2.2 VAE?)")
 
-    # Fixed for the Wan-2.2 family; dim/dec_dim/z_dim/channels vary per checkpoint.
-    dim_mult = [1, 2, 4, 4]
-    num_res_blocks = 2
-    patch_size = 2
-    dim = state_dict["encoder.conv1.weight"].shape[0]
-    dec_dim = state_dict["decoder.head.0.gamma"].shape[0]
-    z_dim = state_dict["conv2.weight"].shape[0]
-    in_channels = state_dict["encoder.conv1.weight"].shape[1]
-    out_channels = state_dict["decoder.head.2.weight"].shape[0]
-    if in_channels != out_channels or in_channels % (patch_size * patch_size):
-        raise ValueError(f"unexpected in/out channels {in_channels}/{out_channels} in {vae_path}")
-    image_channels = in_channels // (patch_size * patch_size)
-
-    if latents_mean is None:
-        latents_mean = WAN22_LATENTS_MEAN
-    if latents_std is None:
-        latents_std = WAN22_LATENTS_STD
-    if len(latents_mean) != z_dim or len(latents_std) != z_dim:
-        raise ValueError(
-            f"latent stats length {len(latents_mean)}/{len(latents_std)} != z_dim {z_dim}"
-            f" in {vae_path} (not a Wan 2.2 VAE?)"
-        )
-
-    if state_dict["encoder.head.0.gamma"].shape[0] != dim * dim_mult[-1]:
-        raise ValueError(
-            f"encoder width {state_dict['encoder.head.0.gamma'].shape[0]} != dim*mult[-1] {dim * dim_mult[-1]}"
-        )
-    if state_dict["decoder.conv1.weight"].shape[0] != dec_dim * dim_mult[-1]:
-        raise ValueError(
-            f"decoder width {state_dict['decoder.conv1.weight'].shape[0]} != dec_dim*mult[-1] {dec_dim * dim_mult[-1]}"
-        )
-    if state_dict["conv1.weight"].shape != (z_dim * 2, z_dim * 2, 1, 1, 1):
-        raise ValueError(f"unexpected conv1 shape {tuple(state_dict['conv1.weight'].shape)}")
-
-    # Per-stage temporal flags: recorded by each resample's video-only time_conv.
-    enc_flags = [
-        f"encoder.downsamples.{i}.downsamples.{num_res_blocks}.time_conv.weight" in state_dict
-        for i in range(len(dim_mult) - 1)
-    ]
-    dec_flags = [
-        f"decoder.upsamples.{i}.upsamples.{num_res_blocks + 1}.time_conv.weight" in state_dict
-        for i in range(len(dim_mult) - 1)
-    ]
-    if dec_flags != enc_flags[::-1]:
-        raise ValueError(f"inconsistent temporal flags in {vae_path}: encoder {enc_flags}, decoder {dec_flags}")
+    arch = _infer_arch(state_dict, vae_path)
 
     vae = AutoencoderKLWan22(
-        dim=dim, dec_dim=dec_dim, z_dim=z_dim, dim_mult=dim_mult, num_res_blocks=num_res_blocks,
-        temperal_downsample=enc_flags, image_channels=image_channels, patch_size=patch_size,
-        latents_mean=latents_mean, latents_std=latents_std,
+        latents_mean=latents_mean, latents_std=latents_std, **arch
     )
 
     # Collapse the video layout to 2D (see docstring).
@@ -519,8 +704,9 @@ def load_wan22_vae(
 
     vae.load_state_dict(state_dict, assign=True)
     logger.info(
-        "Loaded VAE from %s (dim=%d dec_dim=%d z_dim=%d channels=%d flags=%s)",
-        vae_path, dim, dec_dim, z_dim, image_channels, enc_flags,
+        "Loaded VAE from %s (%s)",
+        vae_path,
+        " ".join(f"{k}={v}" for k, v in arch.items()),
     )
     vae.to(device, dtype)
     return vae.eval().requires_grad_(False)

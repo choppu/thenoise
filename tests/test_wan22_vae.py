@@ -1,37 +1,59 @@
-"""The Wan 2.2 VAE (2D still-image port, used by Qwen-Image-2.1).
+"""The Wan 2.2 family VAE (2D still-image port): Wan 2.2 and Qwen-Image 2.1.
 
 The tests cover the 16x encode/decode geometry, the documented latent
 normalisation, the exact single-frame folds of the reference's
 ``AvgDown3D``/``DupUp3D`` shortcuts (checked against a verbatim copy of the
-official 5D code run on a one-frame input), and the checkpoint loader's
-weight collapse + architecture inference. A reduced-channel instance keeps
-everything sub-second; the shipped constants are asserted on the class.
+official 5D code run on a one-frame input), the row-strip conv path, and the
+checkpoint loader's weight collapse + architecture inference for BOTH shipped
+variants (48ch RGB/patchify-2 and 64ch RGBA/patchify-1). A reduced-channel
+instance keeps everything sub-second; the shipped constants are asserted on the
+module.
 """
 from __future__ import annotations
 
 import pytest
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from conftest import write_safetensors
 from thenoise.vae import AutoencoderKLWan22, load_wan22_vae
+from thenoise.vae import wan22 as wan22_module
 from thenoise.vae.wan22 import (
+    LATENT_STATS,
+    QWEN_IMAGE21_LATENTS_MEAN,
+    QWEN_IMAGE21_LATENTS_STD,
     WAN22_LATENTS_MEAN,
     WAN22_LATENTS_STD,
     Wan22AvgDown,
     Wan22DupUp,
+    Wan22ResidualBlock,
+    strip_apply,
 )
 
 TINY_MEAN = [0.1, 0.2, 0.3, 0.4]
 TINY_STD = [2.0, 4.0, 8.0, 16.0]
 
+# The Qwen-Image 2.1 shape at toy width: 64 latent channels, five stages (16x
+# with no patchify), RGBA. Keeps the real variant's geometry without its size.
+TINY_QWEN_DIM_MULT = [1, 2, 4, 8, 8]
+TINY_QWEN_TEMPORAL = [False, True, True, True]
+
 
 def _tiny_vae() -> AutoencoderKLWan22:
-    """The shipped architecture shape with 8-channel blocks (random weights)."""
+    """The Wan 2.2 shape with 8-channel blocks and a 4ch latent (random weights)."""
     return AutoencoderKLWan22(
         dim=8, dec_dim=8, z_dim=4, dim_mult=[1, 2, 4, 4],
         temperal_downsample=[False, True, True],
         latents_mean=TINY_MEAN, latents_std=TINY_STD,
+    )
+
+
+def _tiny_qwen21_vae() -> AutoencoderKLWan22:
+    """The Qwen-Image 2.1 shape at toy width, with the shipped latent stats."""
+    return AutoencoderKLWan22(
+        dim=8, dec_dim=8, z_dim=64, dim_mult=TINY_QWEN_DIM_MULT,
+        temperal_downsample=TINY_QWEN_TEMPORAL, image_channels=4, patch_size=1,
     )
 
 
@@ -46,10 +68,24 @@ def tiny_vae():
 def test_documented_shape_constants():
     assert len(WAN22_LATENTS_MEAN) == 48
     assert len(WAN22_LATENTS_STD) == 48
+    assert len(QWEN_IMAGE21_LATENTS_MEAN) == 64
+    assert len(QWEN_IMAGE21_LATENTS_STD) == 64
+    # The loader picks the statistics by z_dim, so the two must not collide.
+    assert LATENT_STATS == {
+        48: (WAN22_LATENTS_MEAN, WAN22_LATENTS_STD),
+        64: (QWEN_IMAGE21_LATENTS_MEAN, QWEN_IMAGE21_LATENTS_STD),
+    }
 
 
-def test_compression_is_16x(tiny_vae):
-    assert tiny_vae.compression == 16  # 2x2 patchify + 8x spatial (three downsample stages)
+@pytest.mark.parametrize("vae", [_tiny_vae(), _tiny_qwen21_vae()], ids=["wan22", "qwen21"])
+def test_spatial_compression_is_16x(vae):
+    """Both variants compress 16x, by different routes (patchify vs stage count)."""
+    assert vae.spatial_compression == 16
+
+
+def test_pixel_channels_are_part_of_the_interface():
+    assert _tiny_vae().pixel_channels == 3
+    assert _tiny_qwen21_vae().pixel_channels == 4
 
 
 def test_dtype_and_device_follow_the_weights(tiny_vae):
@@ -81,6 +117,131 @@ def test_roundtrip_is_finite_and_clamped(tiny_vae):
     assert out.shape == pixels.shape
     assert torch.isfinite(out).all()
     assert out.min() >= -1.0 and out.max() <= 1.0
+
+
+# ------------------------------------------------------------------ RGBA variant
+
+
+@pytest.fixture(scope="module")
+def tiny_qwen21():
+    return _tiny_qwen21_vae().eval().requires_grad_(False)
+
+
+def test_qwen21_geometry_is_64ch_at_16x(tiny_qwen21):
+    with torch.no_grad():
+        latents = tiny_qwen21.encode(torch.randn(1, 4, 64, 64))
+        pixels = tiny_qwen21.decode(torch.randn(1, 64, 2, 2))
+    assert latents.shape == (1, 64, 4, 4)
+    assert pixels.shape == (1, 4, 32, 32)
+
+
+def test_qwen21_roundtrip_keeps_the_alpha_channel(tiny_qwen21):
+    with torch.no_grad():
+        out = tiny_qwen21.decode_to_pixels(tiny_qwen21.encode_pixels_to_latents(torch.randn(1, 4, 32, 32)))
+    assert out.shape == (1, 4, 32, 32)
+    assert torch.isfinite(out).all()
+
+
+def test_rgb_input_gets_an_opaque_alpha(tiny_qwen21, monkeypatch):
+    """The engine hands the VAE RGB; an RGBA VAE is fed alpha = 1.0."""
+    seen = {}
+
+    def spy_encode(x):
+        seen["x"] = x
+        return torch.zeros(1, 64, 2, 2)
+
+    monkeypatch.setattr(tiny_qwen21, "encode", spy_encode)
+    tiny_qwen21.encode_pixels_to_latents(torch.zeros(1, 3, 32, 32))
+
+    assert seen["x"].shape == (1, 4, 32, 32)
+    assert torch.equal(seen["x"][:, :3], torch.zeros(1, 3, 32, 32))
+    assert torch.equal(seen["x"][:, 3], torch.ones(1, 32, 32))
+
+
+def test_rgb_vae_truncates_rgba_input(tiny_vae, monkeypatch):
+    seen = {}
+
+    def spy_encode(x):
+        seen["x"] = x
+        return torch.zeros(1, 4, 1, 1)
+
+    monkeypatch.setattr(tiny_vae, "encode", spy_encode)
+    tiny_vae.encode_pixels_to_latents(torch.ones(1, 4, 32, 32))
+    assert seen["x"].shape == (1, 3, 32, 32)
+
+
+def test_channel_count_the_vae_cannot_take_is_an_error(tiny_qwen21):
+    with pytest.raises(ValueError, match="4 pixel channels"):
+        tiny_qwen21.encode_pixels_to_latents(torch.zeros(1, 1, 32, 32))
+
+
+def test_qwen21_normalises_with_its_own_stats(tiny_qwen21):
+    assert tiny_qwen21._latents_mean.flatten().tolist() == pytest.approx(QWEN_IMAGE21_LATENTS_MEAN)
+    assert (1.0 / tiny_qwen21._latents_inv_std).flatten().tolist() == pytest.approx(QWEN_IMAGE21_LATENTS_STD)
+
+
+# ------------------------------------------------------------------ row stripping
+
+
+def test_strip_apply_is_a_no_op_below_the_threshold():
+    conv = nn.Conv2d(4, 4, 3, padding=1).eval()
+    x = torch.randn(1, 4, 8, 8)
+    assert strip_apply(conv, x) is not None
+    calls = []
+    strip_apply(lambda s: calls.append(s.shape[-2]) or conv(s), x)
+    assert calls == [8]  # one whole call, no strips
+
+
+def test_strip_apply_matches_the_direct_conv(monkeypatch):
+    """Forced tiny strips must give the same result as one full call."""
+    conv = nn.Conv2d(4, 6, 3, padding=1).eval()
+    x = torch.randn(1, 4, 40, 7)
+    monkeypatch.setattr(wan22_module, "STRIP_ELEMS", 256)
+    assert torch.allclose(strip_apply(conv, x, halo=1), conv(x), atol=1e-5)
+
+
+def test_strip_apply_matches_the_direct_upsample(monkeypatch):
+    fn = nn.Sequential(
+        nn.Upsample(scale_factor=2, mode="nearest-exact"), nn.Conv2d(4, 4, 3, padding=1)
+    ).eval()
+    x = torch.randn(1, 4, 24, 5)
+    monkeypatch.setattr(wan22_module, "STRIP_ELEMS", 128)
+    assert torch.allclose(strip_apply(fn, x, scale=2, halo=1), fn(x), atol=1e-5)
+
+
+def test_strip_apply_out_adds_in_place(monkeypatch):
+    x = torch.randn(1, 4, 24, 5)
+    out = torch.full((1, 4, 48, 5), 3.0)
+    monkeypatch.setattr(wan22_module, "STRIP_ELEMS", 128)
+    got = strip_apply(
+        lambda s: torch.ones(s.shape[0], s.shape[1], s.shape[2] * 2, s.shape[3]),
+        x, scale=2, halo=0, out=out,
+    )
+    assert got is out
+    assert torch.equal(out, torch.full_like(out, 4.0))
+
+
+def test_residual_block_is_strip_invariant():
+    """The stripped block (its normal path) equals the plain sequential one."""
+    blk = nn.Sequential(*[Wan22ResidualBlock(6, 8)]).eval()
+    x = torch.randn(1, 6, 32, 5)
+    plain = x.clone()
+    for layer in blk[0].residual:
+        plain = layer(plain)
+    ref = plain + blk[0].shortcut(x)
+    assert torch.allclose(blk(x), ref, atol=1e-5)
+
+
+def test_encode_and_decode_are_strip_invariant(tiny_vae, monkeypatch):
+    """Strips are a memory device, not an approximation: same numbers either way."""
+    z = torch.randn(1, 4, 2, 2)
+    pixels = torch.randn(1, 3, 32, 32)
+    with torch.no_grad():
+        ref_decode, ref_encode = tiny_vae.decode(z), tiny_vae.encode(pixels)
+        monkeypatch.setattr(wan22_module, "STRIP_ELEMS", 64)
+        got_decode, got_encode = tiny_vae.decode(z), tiny_vae.encode(pixels)
+    assert torch.allclose(got_decode, ref_decode, atol=1e-4)
+    assert torch.allclose(got_encode, ref_encode, atol=1e-4)
 
 
 # ---------------------------------------------------------- latent normalisation
@@ -200,11 +361,20 @@ def test_dupup_equals_nearest_duplicate_when_in_equals_out():
 # ------------------------------------------------------------------- the loader
 
 
-def _as_video_state_dict(sd: dict, enc_flags: list, dec_flags: list, dim, dec_dim) -> dict:
+def _as_video_state_dict(
+    sd: dict,
+    enc_flags: list,
+    dec_flags: list,
+    dim,
+    dec_dim,
+    dim_mult=(1, 2, 4, 4),
+    temporal_kernel=3,
+) -> dict:
     """Re-expand a 2D state dict into the checkpoint's 5D video layout.
 
     Non-last time slices are filled with garbage on purpose: the loader must
-    pick the last slice, not a specific one.
+    pick the last slice, not a specific one. ``temporal_kernel`` is 3 for the
+    Wan 2.2 weights and 1 for the Qwen-Image 2.1 ones.
     """
     num_res_blocks = 2
     out = {}
@@ -213,7 +383,7 @@ def _as_video_state_dict(sd: dict, enc_flags: list, dec_flags: list, dim, dec_di
             # checkpoint gammas: 4D, except the 3D attention norm
             out[key] = val.unsqueeze(-1) if ".norm.gamma" not in key else val
         elif val.dim() == 4:  # conv weight (out, in, kh, kw)
-            time = 3 if val.shape[-2:] == (3, 3) else 1  # 3x3 vs 1x1 convs
+            time = temporal_kernel if val.shape[-2:] == (3, 3) else 1  # 3x3 vs 1x1 convs
             w = torch.full((val.shape[0], val.shape[1], time, val.shape[2], val.shape[3]), -12345.0)
             w[:, :, -1] = val
             out[key] = w
@@ -223,14 +393,14 @@ def _as_video_state_dict(sd: dict, enc_flags: list, dec_flags: list, dim, dec_di
     for i, flag in enumerate(enc_flags):
         if not flag:
             continue
-        out_c = dim * [1, 2, 4, 4][i]
-        out[f"encoder.downsamples.{i}.downsamples.{num_res_blocks}.time_conv.weight"] = torch.zeros(out_c, out_c, 3, 1, 1)
+        out_c = dim * dim_mult[i]
+        out[f"encoder.downsamples.{i}.downsamples.{num_res_blocks}.time_conv.weight"] = torch.zeros(out_c, out_c, temporal_kernel, 1, 1)
         out[f"encoder.downsamples.{i}.downsamples.{num_res_blocks}.time_conv.bias"] = torch.zeros(out_c)
     for i, flag in enumerate(dec_flags):
         if not flag:
             continue
-        out_c = dec_dim * [4, 4, 2, 1][i]
-        out[f"decoder.upsamples.{i}.upsamples.{num_res_blocks + 1}.time_conv.weight"] = torch.zeros(2 * out_c, out_c, 3, 1, 1)
+        out_c = dec_dim * dim_mult[::-1][i]
+        out[f"decoder.upsamples.{i}.upsamples.{num_res_blocks + 1}.time_conv.weight"] = torch.zeros(2 * out_c, out_c, temporal_kernel, 1, 1)
         out[f"decoder.upsamples.{i}.upsamples.{num_res_blocks + 1}.time_conv.bias"] = torch.zeros(2 * out_c)
     return out
 
@@ -261,6 +431,37 @@ def test_load_wan22_vae_collapses_and_infers(tmp_path):
     assert vae.decoder.upsamples[2].avg_shortcut.factor_t == 1
     assert vae.decoder.upsamples[3].avg_shortcut is None
     # every 2D weight survived the collapse bit-exactly (last slice, not garbage)
+    loaded, source_sd = vae.state_dict(), source.state_dict()
+    assert set(loaded) == set(source_sd)
+    for key in loaded:
+        assert torch.equal(loaded[key], source_sd[key]), key
+
+
+def test_load_wan22_vae_infers_the_qwen21_variant(tmp_path):
+    """64ch / RGBA / no-patchify / temporal-kernel-1: inferred, plus its own stats.
+
+    This is the Qwen-Image 2.1 layout — same module, different everything else.
+    """
+    source = _tiny_qwen21_vae()
+    video_sd = _as_video_state_dict(
+        source.state_dict(),
+        enc_flags=TINY_QWEN_TEMPORAL, dec_flags=TINY_QWEN_TEMPORAL[::-1],
+        dim=8, dec_dim=8, dim_mult=TINY_QWEN_DIM_MULT, temporal_kernel=1,
+    )
+    path = write_safetensors(tmp_path / "qwen21_vae.safetensors", video_sd)
+
+    vae = load_wan22_vae(path, device="cpu")  # the z_dim=64 stats are picked for us
+
+    assert vae.z_dim == 64
+    assert vae.dim_mult == TINY_QWEN_DIM_MULT
+    assert vae.patch_size == 1  # 16x over four downsample stages -> no patchify
+    assert vae.pixel_channels == 4
+    assert vae.spatial_compression == 16
+    assert vae._latents_mean.flatten().tolist() == pytest.approx(QWEN_IMAGE21_LATENTS_MEAN)
+    # the per-stage temporal flags, read off the video-only time_conv keys
+    assert [b.avg_shortcut.factor_t for b in vae.encoder.downsamples[:4]] == [1, 2, 2, 2]
+    assert [b.avg_shortcut.factor_t for b in vae.decoder.upsamples[:4]] == [2, 2, 2, 1]
+
     loaded, source_sd = vae.state_dict(), source.state_dict()
     assert set(loaded) == set(source_sd)
     for key in loaded:
