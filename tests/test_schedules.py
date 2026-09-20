@@ -11,6 +11,7 @@ their kernel reads: no checkpoints, no device.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -45,14 +46,25 @@ def _params(steps=8, width=1024, height=1024):
     )
 
 
-# The shipped patch/latent geometry of each adapter (the shipped configs all
-# patchify 2x2 on an 8x-compressed VAE latent -> a 16px pixel alignment).
+# The attributes each adapter's kernels read on a bare instance. Latent geometry
+# comes from the VAE (``z_dim`` / ``spatial_compression``), so a stand-in stands in
+# for it; the shipped configs all patchify 2x2 on an 8x-compressed latent -> a 16px
+# pixel alignment (Flux.2's VAE is already 16x on a packed latent and its DiT does
+# not patchify further).
+def _vae(z_dim, spatial_compression):
+    return SimpleNamespace(z_dim=z_dim, spatial_compression=spatial_compression)
+
+
 BARE = {
-    "anima": {},
-    "krea2": {"dit": SimpleNamespace(config=SimpleNamespace(patch=2)), "_compression": 8},
-    "zimage": {"dit": SimpleNamespace(patch_size=2)},
-    "flux_klein": {},
-    "qwen_image": {},
+    "anima": {"vae": _vae(16, 8), "dit": SimpleNamespace(patch_spatial=2)},
+    "krea2": {
+        "vae": _vae(16, 8),
+        "dit": SimpleNamespace(config=SimpleNamespace(patch=2)),
+        "_compression": 8,
+    },
+    "zimage": {"vae": _vae(16, 8), "dit": SimpleNamespace(patch_size=2)},
+    "flux_klein": {"vae": _vae(128, 16)},
+    "qwen_image": {"vae": _vae(16, 8), "dit": SimpleNamespace(patch_size=2)},
 }
 
 # The adapters whose step schedule shifts with the image token count. Krea 2 is
@@ -121,29 +133,45 @@ def test_percent_to_sigma_stays_strictly_below_one(model_cls):
 
 
 @pytest.mark.parametrize(
-    "model_cls,expect",
+    "model_cls,edit,kv_cache",
     [
-        (AnimaModel, False),
-        (Krea2Model, False),
-        (ZImageModel, False),
-        (FluxKleinModel, True),
-        (QwenImageModel, True),
+        (AnimaModel, False, False),
+        (Krea2Model, False, False),
+        (ZImageModel, False, False),
+        (FluxKleinModel, True, True),
+        (QwenImageModel, True, True),
     ],
     ids=CATALOG_IDS,
 )
-def test_reference_editing_capability(model_cls, expect):
-    """Only adapters that override the reference kernels advertise ``supports_edit``.
+def test_model_capabilities(model_cls, edit, kv_cache):
+    """``CAPABILITIES`` is the one source of truth, and it must describe the adapter.
 
-    The pipeline raises for a model that advertises editing without the kernels,
-    so the flag and the overrides must never drift apart.
+    Both halves are checked against the machinery they name, since the pipeline
+    rejects a request the model cannot serve and ``/health`` lets the UI grey out
+    what the loaded model lacks:
+
+      * ``edit``           -> the reference kernels are really overridden.
+      * ``kv_cache``       -> the shared cache protocol really starts a run cache,
+        and freezing reference K/V needs a reference latent, so it implies ``edit``.
     """
     model = _bare(model_cls, **BARE[model_cls.name])
-    assert model.supports_edit is expect
+    assert model.capability("edit") is edit
+    assert model.capability("kv_cache") is kv_cache
+    assert not kv_cache or edit  # freezing reference K/V needs a reference latent
     overrides_reference_kernels = (
         model_cls.encode_reference is not DiffusionModel.encode_reference
         and model_cls.pack_reference_latent is not DiffusionModel.pack_reference_latent
     )
-    assert overrides_reference_kernels is expect
+    assert overrides_reference_kernels is edit
+    model.start_kv_caches(replace(_params(), kv_cache=True), True, True)
+    assert (model._kv_caches is not None) is kv_cache
+
+
+def test_unknown_capability_is_an_error():
+    """An unlisted capability raises rather than quietly reading as "cannot do it"."""
+    model = _bare(AnimaModel)
+    with pytest.raises(KeyError, match="unknown capability"):
+        model.capability("controlnet")
 
 
 def test_base_encode_reference_is_not_implemented():
