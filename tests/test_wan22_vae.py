@@ -1,6 +1,6 @@
 """The Wan 2.2 VAE (2D still-image port, used by Qwen-Image-2.1).
 
-The tests cover the 32x encode/decode geometry, the documented latent
+The tests cover the 16x encode/decode geometry, the documented latent
 normalisation, the exact single-frame folds of the reference's
 ``AvgDown3D``/``DupUp3D`` shortcuts (checked against a verbatim copy of the
 official 5D code run on a one-frame input), and the checkpoint loader's
@@ -209,9 +209,8 @@ def _as_video_state_dict(sd: dict, enc_flags: list, dec_flags: list, dim, dec_di
     num_res_blocks = 2
     out = {}
     for key, val in sd.items():
-        if val.dim() == 4 and key.endswith(".gamma"):
-            # resnet/head gammas are 4D in the checkpoint; the attention norm
-            # gamma is the 3D exception
+        if val.dim() == 3 and key.endswith(".gamma"):
+            # checkpoint gammas: 4D, except the 3D attention norm
             out[key] = val.unsqueeze(-1) if ".norm.gamma" not in key else val
         elif val.dim() == 4:  # conv weight (out, in, kh, kw)
             time = 3 if val.shape[-2:] == (3, 3) else 1  # 3x3 vs 1x1 convs
@@ -283,6 +282,16 @@ def test_load_wan22_vae_without_temporal_flags(tmp_path):
 def test_load_wan22_vae_rejects_a_wrong_file(tmp_path):
     path = write_safetensors(tmp_path / "wrong.safetensors", {"unet.weight": torch.zeros(1)})
     with pytest.raises(ValueError, match="not a Wan 2\\.2 VAE"):
+        load_wan22_vae(path, device="cpu")
+
+
+def test_load_wan22_vae_rejects_default_stats_for_other_z_dim(tmp_path):
+    """Shipped 48ch defaults vs a z_dim-4 checkpoint -> clear error, not an assert."""
+    source = _tiny_vae()  # z_dim=4
+    video_sd = _as_video_state_dict(source.state_dict(), [False, True, True], [True, True, False], 8, 8)
+    path = write_safetensors(tmp_path / "wan22_z4.safetensors", video_sd)
+
+    with pytest.raises(ValueError, match="z_dim"):
         load_wan22_vae(path, device="cpu")
 
 

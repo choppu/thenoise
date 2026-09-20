@@ -440,7 +440,7 @@ def load_wan22_vae(
     The architecture is inferred from the checkpoint, then the video weights
     are collapsed to 2D: drop ``time_conv``, keep the last time slice of 5D
     convs (causal padding puts the single frame at the end), squeeze 4D gammas."""
-    logger.info("Initializing VAE")
+    logger.info("Loading Wan 2.2 VAE from %s", vae_path)
     state_dict = load_safetensors(vae_path, device=device)
 
     required = (
@@ -469,6 +469,16 @@ def load_wan22_vae(
     if in_channels != out_channels or in_channels % (patch_size * patch_size):
         raise ValueError(f"unexpected in/out channels {in_channels}/{out_channels} in {vae_path}")
     image_channels = in_channels // (patch_size * patch_size)
+
+    if latents_mean is None:
+        latents_mean = WAN22_LATENTS_MEAN
+    if latents_std is None:
+        latents_std = WAN22_LATENTS_STD
+    if len(latents_mean) != z_dim or len(latents_std) != z_dim:
+        raise ValueError(
+            f"latent stats length {len(latents_mean)}/{len(latents_std)} != z_dim {z_dim}"
+            f" in {vae_path} (not a Wan 2.2 VAE?)"
+        )
 
     if state_dict["encoder.head.0.gamma"].shape[0] != dim * dim_mult[-1]:
         raise ValueError(
