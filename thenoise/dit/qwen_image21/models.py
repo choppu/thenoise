@@ -98,6 +98,7 @@ class AttentionPlan:
     segments: Sequence[tuple[int, int, Optional[Tensor]]] = ()
     bufs: Optional[KVBuffers] = None
 
+    @torch._dynamo.disable(recursive=True)
     def run(self, q: Tensor, k: Tensor, v: Tensor) -> Tensor:
         """Attention for one block; ``q``/``k``/``v`` are ``[B, H, N, D]`` post-RoPE."""
         if self.mode == "read":
@@ -223,7 +224,7 @@ class QwenImage21TransformerBlock(nn.Module):
         self.img_norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=eps)
         self.img_mlp = SwiGLUFeedForward(dim, dim * mlp_ratio, fused=fused_mlp)
 
-    @torch.compile(fullgraph=True)
+    @torch.compile(fullgraph=False)
     def forward(
         self,
         x: Tensor,
