@@ -35,6 +35,12 @@ low-strength refine, adding a pixel-domain upscaler above factor 2; ``no-refiner
 uses only the pixel-domain upscaler (no latent 2x), limited to its detected scale.
 Pixel upscalers are selected by name from ``upscaler_dir`` (CLI ``--upscaler-dir``);
 without one, only ``refined`` factors <= 2 are available.
+
+Every stage after the VAE carries the VAE's own pixel width
+(``DiffusionModel.pixel_channels``), so an RGBA model's matte rides the same fp32
+tensor through the notch filter, the postprocess kernels, the resize and the PNG
+writer. Only the boundaries that cannot carry one composite it onto white: an RGB
+VAE's encoder and the RGB-only pixel upscaler.
 """
 from __future__ import annotations
 
@@ -55,6 +61,7 @@ from thenoise.upscale.pixel import PixelUpscalerManager
 from thenoise.utils.pipeline_cache import PipelineCache
 from thenoise.utils.image_tensor import (
     center_crop,
+    load_image,
     pil_to_pixels,
     pixels_to_pil,
     resize_to_target,
@@ -154,11 +161,13 @@ class PipelineController:
     ) -> Tuple:
         """Cache key for the encoded reference latent(s) (edit path).
 
-        Hashes each image's RGB bytes (in order) plus the target size, since
-        refs are resize/center-cropped to the working resolution.
+        Hashes each image's normalized pixel bytes (RGBA when it carries
+        transparency, so two refs differing only in their alpha do not share a
+        cache entry) in order, plus the target size, since refs are
+        resize/center-cropped to the working resolution.
         """
         digests = tuple(
-            hashlib.md5(img.convert("RGB").tobytes()).hexdigest() for img in images
+            hashlib.md5(load_image(img).tobytes()).hexdigest() for img in images
         )
         return ("reference", width, height, digests)
 
@@ -319,7 +328,9 @@ class PipelineController:
                         # ComfyUI-style: scale each ref to cover the working size
                         # (center-crop if the aspect ratio differs).
                         cover = resize_to_cover_center_crop(img, r.width, r.height)
-                        pixels = pil_to_pixels(cover)  # [C,H,W] fp32 [-1,1]
+                        # Pixels at the VAE's own width: an RGB VAE gets the alpha
+                        # composited away.
+                        pixels = pil_to_pixels(cover, model.pixel_channels)
                         ref_latents.append(model.encode_reference(pixels))  # [1,C,H,W]
                     self._cache.reference_store(ref_key, ref_latents)
 
@@ -334,6 +345,8 @@ class PipelineController:
                         negative_prompt=request.negative_prompt,
                         guidance_scale=r.guidance_scale,
                         image=request.image if is_edit else None,
+                        width=r.width,
+                        height=r.height,
                     )
                 )
                 memory.offload("text_encoder")
@@ -372,7 +385,7 @@ class PipelineController:
                     latents = self._upscale_and_refine(latents, cond, params)
                 memory.offload("dit")
                 memory.ensure("vae")
-                pixels = model.decode(latents)  # fp32 GPU tensor [C,H,W]
+                pixels = model.decode(latents)  # fp32 GPU [C,H,W], C = vae.pixel_channels
                 self._cache.decode_store(decode_key, pixels)
 
             # Leave every swappable component offloaded at rest (the VAE stays
@@ -426,6 +439,10 @@ class PipelineController:
         effective_sampler = model.pref("sampler", request.sampler)
         ref_method = model.pref("ref_method", request.ref_method)
         kv_cache = model.pref("kv_cache", request.kv_cache)
+
+        # kv_cache only makes sense on an edit request.
+        if request.kv_cache is None and request.image is None:
+            kv_cache = False
 
         pixel_upscaler = request.pixel_upscaler
         if pixel_upscaler and self._pixel_upscalers.upscaler_dir:

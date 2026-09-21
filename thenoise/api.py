@@ -20,7 +20,8 @@ from typing import List, Literal, Optional, Union
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
-from PIL import Image
+
+from thenoise.utils.image_tensor import load_image
 
 logger = logging.getLogger(__name__)
 
@@ -95,10 +96,8 @@ class EditRequest(Text2ImageRequest):
         from .models.config import GenerateRequest
 
         b64_list = self.image if isinstance(self.image, list) else [self.image]
-        images = [
-            Image.open(io.BytesIO(base64.b64decode(b))).convert("RGB")
-            for b in b64_list
-        ]
+        # Keep an alpha if the input has one; only the model knows whether it wants it.
+        images = [load_image(io.BytesIO(base64.b64decode(b))) for b in b64_list]
         req: GenerateRequest = self.to_request()
         # OpenAI-style: ``image`` is one or more images; store single or list.
         req.image = images[0] if len(images) == 1 else images
@@ -134,6 +133,8 @@ def create_app(runtime) -> FastAPI:
             "status": "ok",
             "models": runtime.available(),
             "capabilities": runtime.model_capabilities(),
+            # 4 when the loaded model's VAE is RGBA, so the UI can show transparency.
+            "pixel_channels": runtime.model_pixel_channels(),
         }
 
     @app.get("/lora")
@@ -219,7 +220,7 @@ def create_app(runtime) -> FastAPI:
         """
         try:
             image = runtime.upscaler.upscale(
-                Image.open(io.BytesIO(base64.b64decode(req.image_b64))).convert("RGB"),
+                load_image(io.BytesIO(base64.b64decode(req.image_b64))),
                 req.upscale_factor,
                 req.pixel_upscaler,
             )

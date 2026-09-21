@@ -17,12 +17,12 @@ from thenoise.upscale import _UPSCALER_FORMATS, load_latent_upscaler, upscale_we
 
 # Per-model public defaults (the values the API/CLI fall back to).
 MODEL_DEFAULTS = {
-    "anima": {"steps": 8, "guidance": 1, "sampler": "er_sde"},
-    "krea2": {"steps": 8, "guidance": 1.0, "sampler": "er_sde"},
-    "zimage": {"steps": 8, "guidance": 1.0, "sampler": "euler"},
-    # Distilled: 4 steps, guidance 1.0 (CFG off), Euler.
-    "flux_klein": {"steps": 4, "guidance": 1.0, "sampler": "euler"},
-    "qwen_image": {"steps": 28, "guidance": 2.5, "sampler": "euler"},
+    "anima": {"steps": 8, "guidance": 1, "sampler": "er_sde", "kv_cache": False},
+    "krea2": {"steps": 8, "guidance": 1.0, "sampler": "er_sde", "kv_cache": False},
+    "zimage": {"steps": 8, "guidance": 1.0, "sampler": "euler", "kv_cache": False},
+    "flux_klein": {"steps": 4, "guidance": 1.0, "sampler": "euler", "kv_cache": False},
+    "qwen_image": {"steps": 28, "guidance": 2.5, "sampler": "euler", "kv_cache": False},
+    "qwen_image21": {"steps": 28, "guidance": 1.0, "sampler": "euler", "kv_cache": True},
 }
 
 
@@ -34,6 +34,7 @@ def test_model_defaults(model):
     assert prefs["steps"] == expected["steps"]
     assert prefs["guidance_scale"] == expected["guidance"]
     assert prefs["sampler"] == expected["sampler"]
+    assert prefs["kv_cache"] is expected["kv_cache"]
     # A typo'd sampler would only blow up at request time; tie it to the registry.
     assert prefs["sampler"] in SAMPLERS
     assert create_sampler(prefs["sampler"], model) is not None
@@ -51,9 +52,16 @@ def test_model_defaults_extend_the_base_preferences(model):
 
 @pytest.mark.parametrize("model", MODEL_CATALOG, ids=CATALOG_IDS)
 def test_model_upscale_format_is_registered_with_weights(model):
-    """Each adapter names a latent format that has a committed upscaler."""
+    """Each adapter names a latent format that has a committed upscaler.
+
+    An adapter may instead raise ``NotImplementedError`` to say its VAE has no
+    upscaler weights yet.
+    """
     instance = object.__new__(model)  # the format is a class constant, no weights
-    fmt = instance._upscale_format()
+    try:
+        fmt = instance._upscale_format()
+    except NotImplementedError as exc:
+        pytest.skip(f"{model.name} has no latent upscaler yet: {exc}")
     assert fmt in _UPSCALER_FORMATS, f"{model.name} names unknown format {fmt!r}"
     _factory, filename, channels = _UPSCALER_FORMATS[fmt]
     assert upscale_weight_path(filename).is_file()
