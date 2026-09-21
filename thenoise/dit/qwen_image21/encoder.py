@@ -59,13 +59,13 @@ T2I_TEMPLATE = SYSTEM_PROMPT + IM_START + "user\n{}" + PROMPT_SUFFIX
 def prompt_template(prompt: str, num_images: int) -> str:
     """The chat-wrapped prompt, with one labelled vision block per reference.
 
-    The images lead the user turn as ``image1``, ``image2``, ... each followed by its
+    The images lead the user turn as ``<image1>``, ``<image2>``, ... each followed by its
     vision block. An empty prompt becomes a single space, so the user turn is never
     empty (which would change the tokenisation of the markers around it).
     """
     if not prompt:
         prompt = " "
-    refs = " ".join(f"image{i + 1}{VISION_BLOCK}" for i in range(num_images))
+    refs = " ".join(f"<image{i + 1}>{VISION_BLOCK}" for i in range(num_images))
     return (T2I_TEMPLATE.replace("{}", refs + "{}", 1) if refs else T2I_TEMPLATE).format(prompt)
 
 
