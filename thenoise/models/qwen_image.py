@@ -59,10 +59,6 @@ class QwenImageModel(DiffusionModel):
     # with ``ref_method="index_timestep_zero"`` (enforced by the pipeline).
     CAPABILITIES = {**DiffusionModel.CAPABILITIES, "edit": True, "kv_cache": True}
 
-    # Qwen-Image uses separate ``to_q``/``to_k``/``to_v`` attention projections,
-    # so LoRA factors must NOT be fused into a single ``qkv``.
-    fused_attention = False
-
     @staticmethod
     def detect(f) -> bool:
         """True if this handle is a Qwen-Image DiT.

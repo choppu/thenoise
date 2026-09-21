@@ -36,6 +36,7 @@ from thenoise.dit.kvcache import KVCache
 from thenoise.utils.text_encoder import find_tokenizer_dir
 from thenoise.models.base import Conditioning, DiffusionModel, Step, normalize_keys
 from thenoise.models.config import EncodePromptArgs, ModelConfig, SamplingParams
+from thenoise.utils.lora import FUSE_QKV
 from thenoise.utils.math import round_up
 from thenoise.vae import load_flux2_vae
 
@@ -61,6 +62,9 @@ class FluxKleinModel(DiffusionModel):
     # valid only with ``ref_method="index_timestep_zero"`` (enforced by the pipeline).
     CAPABILITIES = {**DiffusionModel.CAPABILITIES, "edit": True, "kv_cache": True}
     REF_INDEX = 10
+
+    # Flux.2's attention is one fused ``attn.qkv`` projection.
+    lora_fusions = FUSE_QKV
 
     def _lora_key_map(self, key: str) -> str:
         """Map ComfyUI Flux.2 LoRA names to this repo's Flux.2 schema.

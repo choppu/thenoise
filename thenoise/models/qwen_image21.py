@@ -29,8 +29,9 @@ per 16x16 — hence the 32-pixel size alignment).
 
 LoRA note: the released checkpoints fuse the SwiGLU gate and up projections into one
 ``img_mlp.gate_up`` matrix, so a LoRA trained against the diffusers ``img_mlp.proj`` /
-``img_mlp.gate_layer`` names only lands on the attention projections (the unmatched
-factors are reported as unused at apply time).
+``img_mlp.gate_layer`` names (PEFT/diffusers trainers, and anything trained off the
+split checkpoint) has its two factor pairs fused onto ``gate_up`` at apply time — the
+``FUSE_GATE_UP`` spec this adapter declares when the checkpoint was built fused.
 """
 from __future__ import annotations
 
@@ -56,6 +57,7 @@ from thenoise.models.base import (
 )
 from thenoise.models.config import EncodePromptArgs, ModelConfig, SamplingParams
 from thenoise.utils.image_tensor import flatten_alpha, resize_to_cover_center_crop
+from thenoise.utils.lora import FUSE_GATE_UP
 from thenoise.utils.math import round_up
 from thenoise.vae import load_wan22_vae
 
@@ -95,9 +97,6 @@ class QwenImage21Model(DiffusionModel):
     # The step-invariant slice is the LEADING text/reference prefix (target last).
     KV_CACHED_SLICE = "prefix"
 
-    # Separate ``to_q``/``to_k``/``to_v`` projections: LoRA factors must not be fused.
-    fused_attention = False
-
     @staticmethod
     def detect(f) -> bool:
         """True if this handle is a Qwen-Image 2.1 DiT.
@@ -116,6 +115,10 @@ class QwenImage21Model(DiffusionModel):
             config.dit_path, device=self.offload_device, dtype=config.dtype
         )
         self.dit.eval().requires_grad_(False)
+
+        # A fused-MLP checkpoint matches a LoRA trained on the split SwiGLU names
+        # only once its ``gate_layer``/``proj`` factors are fused onto ``gate_up``.
+        self.lora_fusions = FUSE_GATE_UP if self.dit.params.fused_mlp else {}
 
         # Per-run state, filled in by ``prepare_latent``.
         self._seqs: dict[str, QwenImage21Sequence] = {}

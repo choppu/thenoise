@@ -192,10 +192,11 @@ class DiffusionModel(ABC):
     # built without ``__init__`` (tests, stubs).
     checkpoint_prefs: Dict[str, Any] = {}
 
-    # Whether the attention projections are fused (``qkv``) or separate
-    # (``to_q``/``to_k``/``to_v``). LoRA factors are fused into a single ``qkv``
-    # only for fused-projection models
-    fused_attention: bool = True
+    # The sub-projection stackings this model's modules use, as a
+    # ``{fused: parts}`` spec (``FUSE_QKV``/``FUSE_GATE_UP`` in
+    # ``thenoise.utils.lora``): a LoRA trained on the separate part names gets
+    # fused onto the fused module before matching. Default: nothing is fused.
+    lora_fusions: Dict[str, Tuple[str, ...]] = {}
 
     # Which end of the attention sequence this model's KV cache freezes: "suffix"
     # for a ``text, target, references`` layout, "prefix" for ``text + references,
@@ -528,7 +529,7 @@ class DiffusionModel(ABC):
                 dit, lora_sds, multipliers, torch.device(self.device),
                 dit_path=self.dit_path,
                 key_map=self._lora_key_map,
-                fuse_attention=self.fused_attention,
+                fusions=self.lora_fusions,
             )
             active_names = ", ".join(
                 self._parse_lora_spec(s)[0] for s in lora_specs

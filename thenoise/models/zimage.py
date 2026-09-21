@@ -23,6 +23,7 @@ from thenoise.models.base import (
     normalize_keys,
 )
 from thenoise.models.config import EncodePromptArgs, ModelConfig, SamplingParams
+from thenoise.utils.lora import FUSE_QKV
 from thenoise.utils.math import round_up
 from thenoise.vae import load_flux_vae
 
@@ -43,6 +44,9 @@ class ZImageModel(DiffusionModel):
     }
 
     MAX_SEQUENCE_LENGTH = 512
+
+    # Z-Image's attention is one fused ``attn.qkv`` projection.
+    lora_fusions = FUSE_QKV
 
     def _lora_key_map(self, key: str) -> str:
         """Diffusers-layout LoRAs name the output projection ``to_out.0``;
