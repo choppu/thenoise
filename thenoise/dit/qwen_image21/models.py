@@ -36,7 +36,7 @@ from torch.nn import functional as F
 
 from thenoise.dit.kvcache import KVBuffers, KVCache, attend, cache_mode
 from thenoise.dit.quantized import QuantizedLinear
-from thenoise.utils.attention import AttentionParams, attention as sdpa_attention
+from thenoise.utils.attention import AttentionParams, eager_attention as eager_sdpa_attention
 from thenoise.utils.positions import broadcast_positions, grid_from_axes
 from thenoise.utils.qk_norm import QKNorm
 from thenoise.utils.rms_norm import RMSNorm
@@ -98,7 +98,6 @@ class AttentionPlan:
     segments: Sequence[tuple[int, int, Optional[Tensor]]] = ()
     bufs: Optional[KVBuffers] = None
 
-    @torch._dynamo.disable(recursive=True)
     def run(self, q: Tensor, k: Tensor, v: Tensor) -> Tensor:
         """Attention for one block; ``q``/``k``/``v`` are ``[B, H, N, D]`` post-RoPE."""
         if self.mode == "read":
@@ -108,7 +107,7 @@ class AttentionPlan:
             k, v = self.bufs.k, self.bufs.v
 
         outs = [
-            sdpa_attention(
+            eager_sdpa_attention(
                 [q[:, :, start:end], k[:, :, :end], v[:, :, :end]],
                 attn_params=None if mask is None else AttentionParams(mask),
             )

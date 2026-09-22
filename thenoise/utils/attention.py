@@ -71,6 +71,21 @@ def uniform_layout(
         v = v.contiguous()
     return q, k, v
 
+@torch._dynamo.disable()
+def eager_attention(
+    qkv_or_q: Union[torch.Tensor, list],
+    k: Optional[torch.Tensor] = None,
+    v: Optional[torch.Tensor] = None,
+    attn_params: Optional[AttentionParams] = None,
+    drop_rate: float = 0.0,
+) -> torch.Tensor:
+    """
+    Executes sdpa in eager mode. 
+    Both ROCm 7.14 and 10.1 show significant performance drop at higher token count
+    in some scenarios. The underlying cause needs further investigation but this
+    workaround doesn't harm performance.
+    """
+    return attention(qkv_or_q, k=k, v=v, attn_params=attn_params, drop_rate=drop_rate)
 
 def attention(
     qkv_or_q: Union[torch.Tensor, list],

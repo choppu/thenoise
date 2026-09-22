@@ -38,6 +38,7 @@ from typing import Hashable, Optional
 import torch
 
 from thenoise.utils.attention import attention as sdpa_attention
+from thenoise.utils.attention import eager_attention as eager_sdpa_attention
 from thenoise.utils.dynamo import mark_token_axis
 
 __all__ = ["KVBuffers", "KVCache", "attend", "cache_mode"]
@@ -194,4 +195,5 @@ def attend(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
     if bufs is not None:
         bufs.write(k, v, bufs.write_offset(k.shape[2]))
         k, v = bufs.k, bufs.v
+        return eager_sdpa_attention([q, k, v])
     return sdpa_attention([q, k, v])

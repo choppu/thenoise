@@ -268,7 +268,7 @@ class QwenImageTransformerBlock(nn.Module):
         gate = torch.where(token_mask, gate[:half].unsqueeze(1), gate[half:].unsqueeze(1))
         return x * (1 + scale) + shift, gate
 
-    @torch.compile(fullgraph=True)
+    @torch.compile(fullgraph=False)
     def forward(
         self,
         hidden_states: torch.Tensor,
