@@ -104,8 +104,9 @@ class AttentionPlan:
         if self.mode == "read":
             return attend(q, k, v, self.bufs)
         if self.bufs is not None:
-            # A fill runs the whole sequence, so what it writes IS the cache.
             self.bufs.write(k, v)
+            k, v = self.bufs.k, self.bufs.v
+
         outs = [
             sdpa_attention(
                 [q[:, :, start:end], k[:, :, :end], v[:, :, :end]],
