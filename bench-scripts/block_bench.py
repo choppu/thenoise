@@ -4,8 +4,8 @@
 This is a *camera*, not a lab: it measures what the blocks in the working tree do
 right now, prints a table and writes a JSON snapshot. There are deliberately no
 A/B switches — nothing here patches a model, swaps an attention backend or
-toggles compilation. Snapshot before a change, snapshot after it, diff the two
-(and a comparison tool can do that later) and a regression is a row.
+toggles compilation. Snapshot before a change, snapshot after it, and a regression is
+a row: ``diff_bench.py`` is that diff, and it is the only way to read a snapshot.
 
 What gets photographed
 ----------------------
@@ -16,14 +16,19 @@ One case per ``(block, scenario, token count)``:
 * **scenario** — the paths a block actually runs: ``plain`` (no KV cache) and
   ``fill`` / ``read`` (the reference-token KV cache of ``thenoise.dit.kvcache``,
   which changes the sequence a block attends over and its modulation layout).
-* **tokens** — the image-token ladder from ``--tokens``: 1024 is a 64x64 latent
-  grid (~1024 px), 4096 ~2048 px, 16384 ~4096 px.
+* **tokens** — the image-token ladder from ``--tokens``, which is the token grid the
+  block sees (the default 4096, 9216, 16384 are 64x64, 96x96 and 128x128). What a
+  token is worth in pixels depends on the model's VAE and patch size, so the ladder
+  is in tokens only. Entries should be perfect squares, or ``grid_side`` snaps them
+  to the nearest one (with a warning).
 
 Inputs are built the way the owning model builds them — the same RoPE builders,
 position ids, key-padding masks, modulation rows, 256-token padding and KV
 buffers — so each block sees the shapes, layouts and strides it sees in the
 server. Text/context length is ``--txt``; editing cases get ``--refs`` reference
-images at the target's resolution (``--refs 0`` drops those scenarios).
+images at the target's resolution (``--refs 0`` drops those scenarios). Blocks whose
+sequence does not depend on the image ladder (text-only ones) run once, at the first
+rung, rather than once per rung under a different key.
 
 Measurement protocol
 --------------------
@@ -36,12 +41,21 @@ same protocol *and* environment, which the JSON records next to them.
   dynamic promotion — the order a server sees.
 * weights are seeded from the block's name (so a block gets identical weights at
   every token count and scenario), activations from the case key.
-* one call to compile, ``--warmup`` warmup calls, then ``--repeats`` groups of
-  ``--iters`` timed calls. ``ms`` is the median of the groups, ``±%`` their
-  coefficient of variation — read it before believing a small delta.
-* ``GiB`` is the allocator's peak for that case alone (stats reset per case).
+* one call to compile (timed as ``comp``), ``--warmup`` warmup calls, then
+  ``--repeats`` groups of ``--iters`` timed calls. ``ms`` is the median of the
+  groups, ``±%`` their coefficient of variation — read it before believing a small
+  delta. The raw groups go into the JSON too, so a comparison can judge a delta
+  against the two runs' own scatter instead of trusting one summary number.
+* ``GiB`` is the allocator's peak for that case alone (stats reset per case), and
+  ``t_s`` is when a case ran since the start of the run: the ladder runs in order,
+  so anything drifting over the several minutes a run takes (clocks, thermals, a
+  neighbour) would otherwise be indistinguishable from a token-count effect.
 * a case that raises is reported and skipped, so one broken block still leaves a
   snapshot of everything else (the exit code is 1).
+* at the end, a *watchlist*: cases over ``±1%``, and blocks that end the ladder
+  costing more per FLOP than they started it. In a single snapshot a block that
+  decays while its neighbours stay flat is the interesting row, and spotting that
+  costs no arithmetic.
 
 A cold ``TORCHINDUCTOR_CACHE_DIR`` costs compile time, never measured time.
 
@@ -52,6 +66,7 @@ Usage
     .venv/bin/python bench-scripts/block_bench.py --models krea2,zimage
     .venv/bin/python bench-scripts/block_bench.py --tokens 4096 --refs 0
     .venv/bin/python bench-scripts/block_bench.py --out bench-scripts/snapshots/head.json
+    .venv/bin/python bench-scripts/diff_bench.py before.json after.json   # what moved
 """
 from __future__ import annotations
 
@@ -72,9 +87,15 @@ from typing import Callable, Optional
 import torch
 from torch import nn
 
-SCHEMA = 1
-DEFAULT_TOKENS = "1024,4096,16384"
+SCHEMA = 2
+DEFAULT_TOKENS = "4096,9216,16384"
 CACHE_SCENARIOS = ("plain", "fill", "read")
+
+# Environment that silently changes which kernels get measured. Recorded so two
+# snapshots that disagree can still be told apart from a real change.
+BENCH_VARS = ("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "MIOPEN_FIND_MODE",
+              "TORCH_BLAS_PREFER_HIPBLASLT", "HSA_OVERRIDE_GFX_VERSION",
+              "TORCH_COMPILE_DISABLE")
 PLAIN = ("plain",)
 
 
@@ -95,18 +116,21 @@ class Fixture:
     block: str
     scenarios: tuple[str, ...]
     build: Callable[["Ctx", int, str], Case]
+    fixed_seq: bool = False          # its sequence never depends on --tokens
 
 
 FIXTURES: list[Fixture] = []
 
 
-def register(model: str, block: str, build, scenarios: tuple[str, ...] = PLAIN) -> None:
-    FIXTURES.append(Fixture(model, block, scenarios, build))
+def register(model: str, block: str, build, scenarios: tuple[str, ...] = PLAIN,
+             fixed_seq: bool = False) -> None:
+    FIXTURES.append(Fixture(model, block, scenarios, build, fixed_seq))
 
 
-def fixture(model: str, block: str, scenarios: tuple[str, ...] = PLAIN):
+def fixture(model: str, block: str, scenarios: tuple[str, ...] = PLAIN,
+            fixed_seq: bool = False):
     def deco(fn):
-        register(model, block, fn, scenarios)
+        register(model, block, fn, scenarios, fixed_seq)
         return fn
     return deco
 
@@ -552,7 +576,7 @@ def krea2_block(ctx: Ctx, tokens: int, scenario: str) -> Case:
                 detail=f"img={tokens} txt={txt} pad={padlen} kv_heads={kv_heads}")
 
 
-@fixture("krea2", "text_fusion", ("nomask", "masked"))
+@fixture("krea2", "text_fusion", ("nomask", "masked"), fixed_seq=True)
 def krea2_text_fusion(ctx: Ctx, tokens: int, scenario: str) -> Case:
     """Krea 2's text-fusion block: the layerwise ones run unmasked, the refiners masked."""
     from thenoise.dit.krea2.mmdit import TextFusionBlock
@@ -686,7 +710,7 @@ def zimage_noise_refiner(ctx: Ctx, tokens: int, scenario: str) -> Case:
     return _zimage_case(ctx, tokens, "noise_refiner", modulation=True)
 
 
-@fixture("zimage", "context_refiner")
+@fixture("zimage", "context_refiner", fixed_seq=True)
 def zimage_context_refiner(ctx: Ctx, tokens: int, scenario: str) -> Case:
     return _zimage_case(ctx, tokens, "context_refiner", modulation=False)
 
@@ -708,12 +732,25 @@ register_flux2()
 
 
 # ------------------------------------------------------------------ measurement
-def measure(run, ctx: Ctx) -> tuple[float, float, float]:
-    """``(median ms per call, coefficient of variation %, peak GiB)``."""
+@dataclass
+class Timing:
+    """What one case cost. ``groups`` is the raw evidence behind ``ms`` and ``cov_pct``."""
+
+    ms: float
+    cov_pct: float
+    groups: list[float]
+    peak_gib: float
+    compile_s: float
+
+
+def measure(run, ctx: Ctx) -> Timing:
+    """One call to compile, ``ctx.warmup`` warmups, then ``repeats`` x ``iters`` timed."""
     sync = torch.cuda.synchronize if ctx.device == "cuda" else (lambda: None)
     with torch.no_grad():
+        t0 = time.perf_counter()
         run()                                      # compiles
         sync()
+        compile_s = time.perf_counter() - t0
         for _ in range(ctx.warmup):
             run()
         sync()
@@ -730,7 +767,51 @@ def measure(run, ctx: Ctx) -> tuple[float, float, float]:
     mean = sum(groups) / len(groups)
     var = sum((g - mean) ** 2 for g in groups) / len(groups)
     peak = torch.cuda.max_memory_allocated() / 2**30 if ctx.device == "cuda" else 0.0
-    return groups[len(groups) // 2], 100 * math.sqrt(var) / mean, peak
+    return Timing(groups[len(groups) // 2], 100 * math.sqrt(var) / mean,
+                  [round(g, 4) for g in groups], peak, compile_s)
+
+
+def watchlist(results: list[dict], cov_warn: float = 1.0, decay_pct: float = 25.0,
+              show: int = 5) -> None:
+    """Rows worth a second look inside *this* snapshot, printed as they are found.
+
+    Two cheap rules, no judgement: a case that was not stable (``±%`` over
+    ``cov_warn``), and a block that ends the ladder costing more per FLOP than it
+    started it. Blocks that get *better* along the ladder are only counted, never
+    listed — that is normal, since attention's share of the FLOPs grows with length —
+    so what is left is decay, the one thing a single snapshot cannot show otherwise.
+    """
+    ok = [r for r in results if r["status"] == "ok"]
+    noisy = sorted((r for r in ok if r["cov_pct"] > cov_warn), key=lambda r: -r["cov_pct"])
+    series: dict[tuple[str, str, str], list[dict]] = {}
+    for r in ok:
+        series.setdefault((r["model"], r["block"], r["scenario"]), []).append(r)
+    decaying, gaining = [], 0
+    for key, rows in series.items():
+        if len(rows) < 2:
+            continue
+        rows.sort(key=lambda r: r["image_tokens"])
+        lost = 100 * (1 - rows[-1]["tflops"] / max(r["tflops"] for r in rows))
+        if lost > decay_pct:
+            decaying.append((lost, key, rows))
+        elif 100 * (rows[-1]["tflops"] / rows[0]["tflops"] - 1) > decay_pct:
+            gaining += 1
+    if not decaying and not noisy:
+        print(f"\nwatchlist: clean (no block losing {decay_pct:.0f}% of its TFLOPS along "
+              f"the ladder, every case under ±{cov_warn}%)")
+        return
+    print("\nwatchlist")
+    for lost, key, rows in sorted(decaying, key=lambda d: -d[0]):
+        track = "  ".join(f"{r['image_tokens']}:{r['tflops']:.1f}" for r in rows)
+        print(f"  {'/'.join(key):38s} loses {lost:3.0f}% of its TFLOPS  {track}")
+    if gaining:
+        print(f"  {'':38s} ({gaining} block(s) gain {decay_pct:.0f}% along the ladder "
+              f"instead — normal, attention's share grows)")
+    for r in noisy[:show]:
+        print(f"  {'/'.join((r['model'], r['block'], r['scenario'])):38s} "
+              f"unstable: ±{r['cov_pct']:.1f}% at {r['image_tokens']} tokens")
+    if len(noisy) > show:
+        print(f"  {'':38s} (+{len(noisy) - show} more over ±{cov_warn}%)")
 
 
 def git_info() -> dict:
@@ -755,6 +836,7 @@ def env_info(device: str) -> dict:
         info["gpu"] = props.name
         info["arch"] = getattr(props, "gcnArchName", "") or ""
         info["total_gib"] = round(props.total_memory / 2**30, 1)
+    info["vars"] = {k: os.environ[k] for k in BENCH_VARS if k in os.environ}
     return info
 
 
@@ -780,8 +862,13 @@ def select(models: str) -> list[Fixture]:
 
 
 def case_list(fixtures: list[Fixture], tokens: list[int], refs: int):
-    """Canonical order: every block at one token count, then the next count."""
+    """Canonical order: every block at one token count, then the next count.
+
+    A block whose sequence does not depend on the ladder is text-only, so the other
+    rungs would repeat the same measurement under a different key: it runs once.
+    """
     return [(f, t, s) for t in tokens for f in fixtures
+            if t == tokens[0] or not f.fixed_seq
             for s in (f.scenarios if refs else ("plain",))]
 
 
@@ -797,9 +884,9 @@ def main() -> None:
     ap.add_argument("--refs", type=int, default=1,
                     help="reference images per editing case; 0 drops fill and read")
     ap.add_argument("--device", default="cuda")
-    ap.add_argument("--iters", type=int, default=5, help="timed calls per group")
+    ap.add_argument("--iters", type=int, default=3, help="timed calls per group")
     ap.add_argument("--repeats", type=int, default=3, help="groups per case (median reported)")
-    ap.add_argument("--warmup", type=int, default=3, help="calls after the compiling one")
+    ap.add_argument("--warmup", type=int, default=1, help="calls after the compiling one")
     ap.add_argument("--out", help="JSON snapshot path (default bench-scripts/snapshots/"
                                   "<device>-<timestamp>.json)")
     ap.add_argument("--list", action="store_true", help="print the case matrix and exit")
@@ -812,7 +899,8 @@ def main() -> None:
     cases = case_list(fixtures, tokens, args.refs)
     if args.list:
         print("\n".join(f"{f.model}/{f.block}/{s}@{t}" for f, t, s in cases))
-        print(f"\n{len(cases)} cases: {len(fixtures)} blocks x {len(tokens)} token counts")
+        print(f"\n{len(cases)} cases: {len(fixtures)} blocks over "
+              f"{len(tokens)} ladder rungs")
         return
 
     if args.device == "cuda" and not torch.cuda.is_available():
@@ -822,8 +910,9 @@ def main() -> None:
 
     env = env_info(args.device)
     print(f"{env.get('gpu', args.device)} | torch {torch.__version__} | hip {env.get('hip')}")
-    print(f"bf16 | batch 1 | txt {ctx.txt} | refs {ctx.refs} | warmup {ctx.warmup} "
-          f"+ {ctx.repeats}x{ctx.iters} timed | {len(cases)} cases")
+    print(f"bf16 | batch 1 | ladder {','.join(map(str, tokens))} | txt {ctx.txt} "
+          f"| refs {ctx.refs} | warmup {ctx.warmup} + {ctx.repeats}x{ctx.iters} timed "
+          f"| {len(cases)} cases")
 
     results, failed, last_tokens, case = [], 0, None, None
     started = time.perf_counter()
@@ -831,7 +920,7 @@ def main() -> None:
         if t != last_tokens:
             print(f"\n=== {t} image tokens ===")
             print(f"  {'block/scenario':32s} {'seq':>7s} {'ms':>8s} {'±%':>5s} "
-                  f"{'TFLOPS':>7s} {'GiB':>6s}")
+                  f"{'TFLOPS':>7s} {'GiB':>6s} {'comp':>6s}")
             last_tokens = t
         label = f"{f.model}/{f.block}/{scenario}"
         entry = {"key": f"{label}@{t}", "model": f.model, "block": f.block,
@@ -841,23 +930,30 @@ def main() -> None:
         print(f"  {label:32s}", end="", flush=True)
         try:
             case = f.build(ctx, t, scenario)
-            ms, cov, peak = measure(case.run, ctx)
-            tflops = case.flops / (ms / 1000) / 1e12
-            print(f" {case.seq:7d} {ms:8.2f} {cov:5.1f} {tflops:7.1f} {peak:6.2f}",
-                  flush=True)
-            entry.update({"status": "ok", "seq": case.seq, "ms": round(ms, 4),
-                          "cov_pct": round(cov, 3), "tflop": round(case.flops / 1e12, 4),
-                          "tflops": round(tflops, 2), "peak_gib": round(peak, 3),
+            tim = measure(case.run, ctx)
+            tflops = case.flops / (tim.ms / 1000) / 1e12
+            print(f" {case.seq:7d} {tim.ms:8.2f} {tim.cov_pct:5.1f} {tflops:7.1f} "
+                  f"{tim.peak_gib:6.2f} {tim.compile_s:6.1f}", flush=True)
+            entry.update({"status": "ok", "seq": case.seq, "ms": round(tim.ms, 4),
+                          "cov_pct": round(tim.cov_pct, 3), "groups": tim.groups,
+                          "compile_s": round(tim.compile_s, 2),
+                          "tflop": round(case.flops / 1e12, 4),
+                          "tflops": round(tflops, 2), "peak_gib": round(tim.peak_gib, 3),
                           "detail": case.detail})
         except Exception as exc:                                # noqa: BLE001
             print(f" {'FAILED':>7s}  {type(exc).__name__}: {str(exc)[:110]}", flush=True)
             entry.update({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
             failed += 1
+        if f.fixed_seq:
+            entry["fixed_seq"] = True                             # run at one rung only
+        entry["t_s"] = round(time.perf_counter() - started, 1)     # drift is not a shape
         results.append(entry)
         case = None
         gc.collect()
         if ctx.device == "cuda":
             torch.cuda.empty_cache()
+
+    watchlist(results)
 
     out = args.out or os.path.join(os.path.dirname(os.path.abspath(__file__)), "snapshots",
                                    f"{device_slug(env)}-{time.strftime('%Y%m%d-%H%M')}.json")
@@ -869,8 +965,9 @@ def main() -> None:
         "git": git_info(),
         "env": env,
         "protocol": {"dtype": "bfloat16", "batch": 1, "grad": False,
-                     "compile": "as-shipped", "txt_tokens": ctx.txt, "refs": ctx.refs,
-                     "warmup": ctx.warmup, "iters": ctx.iters, "repeats": ctx.repeats,
+                     "compile": "as-shipped", "tokens": tokens, "txt_tokens": ctx.txt,
+                     "refs": ctx.refs, "warmup": ctx.warmup, "iters": ctx.iters,
+                     "repeats": ctx.repeats,
                      "order": "token count ascending, fixtures in registry order"},
         "cases": results,
     }
