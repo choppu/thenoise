@@ -45,13 +45,13 @@ Edit-2511 BF16, 1024×768:
 
 *Generated (Qwen-Image 2512):*
 
-<img src="https://github.com/user-attachments/assets/TODO-qwen-image-generate-1" alt="Qwen-Image generated example 1" />
+<img width="768" height="1024" alt="thenoise_1743071553" src="https://github.com/user-attachments/assets/b46e06a6-42ce-49ef-a8c4-3ec69ae31af1" />
 
-*Edited (Qwen-Image-Edit 2511) — instruction: "a fox wearing a red scarf":*
+*Edited (Qwen-Image-Edit 2511) — instruction: "Change palette to red and cyan.":*
 
 | Before | After |
 |---|---|
-| <img src="https://github.com/user-attachments/assets/TODO-qwen-image-edit-before" alt="Qwen-Image-Edit: input image" /> | <img src="https://github.com/user-attachments/assets/TODO-qwen-image-edit-after" alt="Qwen-Image-Edit: output image" /> |
+| <img width="100%" alt="thenoise_1070888462" src="https://github.com/user-attachments/assets/2667b274-7084-4012-ab7a-51ae91176012" /> | <img width="100%" alt="thenoise_edit_1579614356" src="https://github.com/user-attachments/assets/91e8bf4b-afef-443e-b9df-aa04913648b7" /> |
 
 ## Download
 
