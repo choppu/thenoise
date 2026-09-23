@@ -44,11 +44,13 @@ prompts quickly — dozens of takes, minimal wait — this is the model to start
 
 *Generated — `(Turbo, 8 steps)`:*
 
-<img width="768" height="1024" alt="thenoise_1653665740" src="https://github.com/user-attachments/assets/f60d2264-69cc-4f7f-b169-9007bd63e9ec" />
+<img width="45%" alt="thenoise_1653665740" src="https://github.com/user-attachments/assets/f60d2264-69cc-4f7f-b169-9007bd63e9ec" />
+<img width="45%" alt="thenoise_1980975552" src="https://github.com/user-attachments/assets/2a975ade-0b15-4bf3-aa04-5c0ec46d00ac" />
 
-*Generated — `(Base, 20 steps, CFG 3)`:*
+*Generated — `(Base, 20 steps, CFG 4)`:*
 
-<img width="768" height="1024" alt="thenoise_561879631" src="https://github.com/user-attachments/assets/736299d7-761e-470d-8e35-ed507a708587" />
+<img width="45%" alt="thenoise_561879631" src="https://github.com/user-attachments/assets/736299d7-761e-470d-8e35-ed507a708587" />
+<img width="45%" alt="thenoise_561879631 (2)" src="https://github.com/user-attachments/assets/fc32adcb-f196-4f7f-8639-0e910ef2523c" />
 
 
 
