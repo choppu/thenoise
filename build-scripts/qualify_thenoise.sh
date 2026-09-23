@@ -76,7 +76,7 @@ CACHE_HINT="$MODEL_DIR/split_files/diffusion_models/anima-$VARIANT.safetensors"
 if [ -f "$CACHE_HINT" ]; then
   echo "model already present; using cache"
 else
-  "$PY" "$REPO_ROOT/scripts/download_anima.py" --out "$MODEL_DIR" --variant "$VARIANT"
+  "$PY" "$REPO_ROOT/scripts/download.py" --model anima --out "$MODEL_DIR" --variant "$VARIANT"
 fi
 
 DIT="$MODEL_DIR/split_files/diffusion_models/anima-$VARIANT.safetensors"

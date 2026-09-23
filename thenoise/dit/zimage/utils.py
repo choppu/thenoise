@@ -84,7 +84,7 @@ def load_zimage_text_encoder(
     if not path.endswith(".safetensors"):
         raise ValueError(
             f"Z-Image text encoder must be a single .safetensors file, got {path!r}. "
-            "Download it with `python scripts/download_zimage.py`."
+            "Download it with `python scripts/download.py --model zimage`."
         )
 
     qwen3 = load_qwen3_model(path, config=QWEN3_4B_CONFIG, dtype=dtype, device=device)

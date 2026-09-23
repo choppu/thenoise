@@ -74,7 +74,7 @@ class PixelUpscalerManager:
         if not self.upscaler_dir:
             raise ValueError(
                 "no pixel upscaler configured; pass --upscaler-dir PATH "
-                "(or run scripts/download_esrgan.py)"
+                "(or run scripts/download.py --model esrgan)"
             )
         name = self._parse_name(name)
         filepath = self._resolve_path(ensure_safetensors(name))

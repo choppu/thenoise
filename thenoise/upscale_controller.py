@@ -41,7 +41,7 @@ class PixelUpscaleController:
         if scale == 0:
             raise ValueError(
                 "no pixel upscaler configured; pass --upscaler-dir "
-                "(or run scripts/download_esrgan.py)"
+                "(or run scripts/download.py --model esrgan)"
             )
         if upscale_factor <= 0:
             upscale_factor = float(scale)
