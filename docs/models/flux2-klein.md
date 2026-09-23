@@ -54,13 +54,13 @@ Base variants have no int8-convrot release.
 
 *Generated — 9B @ 4 steps:*
 
-<img src="https://github.com/user-attachments/assets/TODO-klein-generate-1" alt="Flux.2 Klein generated example 1" />
+<img width="768" height="1024" alt="thenoise_269346642" src="https://github.com/user-attachments/assets/7784ad89-12f6-4838-a412-508cc23ecf31" />
 
-*Edited — instruction: "a fox wearing a red scarf":*
+*Edited — instruction: "Color this image":*
 
 | Before | After |
 |---|---|
-| <img src="https://github.com/user-attachments/assets/TODO-klein-edit-before" alt="Flux.2 Klein edit: input image" /> | <img src="https://github.com/user-attachments/assets/TODO-klein-edit-after" alt="Flux.2 Klein edit: output image" /> |
+| <img width="1536" height="2048" alt="thenoise_571971704" src="https://github.com/user-attachments/assets/71c8397f-00ac-45e2-b4d0-2c391e256c40" /> | <img width="1536" height="2048" alt="thenoise_edit_3340995256" src="https://github.com/user-attachments/assets/58557f2e-6591-40b9-84ab-5521bab7f2ca" />|
 
 ## Download
 
