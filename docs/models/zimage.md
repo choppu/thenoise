@@ -48,6 +48,7 @@ reference settings.
 ## Examples
 
 *Generated — Turbo:*
+
 <img width="768" height="1024" alt="thenoise_1484041240" src="https://github.com/user-attachments/assets/ffc2ef78-51d3-415b-a263-372353c9eb76" />
 <img width="768" height="1024" alt="thenoise_3826314304" src="https://github.com/user-attachments/assets/00298384-47a0-469e-bea7-fb7a809a1830" />
 
