@@ -54,7 +54,7 @@ Base variants have no int8-convrot release.
 
 *Generated — 9B @ 4 steps:*
 
-<img width="768" height="1024" alt="thenoise_269346642" src="https://github.com/user-attachments/assets/7784ad89-12f6-4838-a412-508cc23ecf31" />
+<img width="45%" alt="thenoise_269346642" src="https://github.com/user-attachments/assets/7784ad89-12f6-4838-a412-508cc23ecf31" />
 
 *Edited — instruction: "Color this image":*
 

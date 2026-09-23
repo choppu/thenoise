@@ -43,8 +43,8 @@ reason people run TheNoise at all.
 
 *Generated:*
 
-<img width="768" height="1024" alt="thenoise_1070888462" src="https://github.com/user-attachments/assets/25afa568-8375-494a-8364-37e20421ded6" />
-<img width="768" height="1024" alt="thenoise_1049596729" src="https://github.com/user-attachments/assets/fc8c175a-f625-4b1c-a90e-882a0d7c4161" />
+<img width="45%" alt="thenoise_1070888462" src="https://github.com/user-attachments/assets/25afa568-8375-494a-8364-37e20421ded6" />
+<img width="45%" alt="thenoise_1049596729" src="https://github.com/user-attachments/assets/fc8c175a-f625-4b1c-a90e-882a0d7c4161" />
 
 ## Download
 

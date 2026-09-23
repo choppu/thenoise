@@ -45,7 +45,7 @@ Edit-2511 BF16, 1024×768:
 
 *Generated (Qwen-Image 2512):*
 
-<img width="768" height="1024" alt="thenoise_1743071553" src="https://github.com/user-attachments/assets/b46e06a6-42ce-49ef-a8c4-3ec69ae31af1" />
+<img width="45%" alt="thenoise_1743071553" src="https://github.com/user-attachments/assets/b46e06a6-42ce-49ef-a8c4-3ec69ae31af1" />
 
 *Edited (Qwen-Image-Edit 2511) — instruction: "Change palette to red and cyan.":*
 
