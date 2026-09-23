@@ -38,15 +38,19 @@ TBD (1024×768).
 
 *Generated:*
 
-<img src="https://github.com/user-attachments/assets/TODO-qwen21-generate-1" alt="Qwen-Image 2.1 generated example 1" />
+<img width="45%" alt="thenoise_3758387159" src="https://github.com/user-attachments/assets/68384c4f-bcd7-4260-84d7-50d69b49b289" />
+<img width="45%" alt="thenoise_3144373276" src="https://github.com/user-attachments/assets/eeb66e4d-8c7e-43ad-8964-6ccd991a644e" />
 
-<img src="https://github.com/user-attachments/assets/TODO-qwen21-generate-2" alt="Qwen-Image 2.1 generated example 2" />
 
-*Edited — instruction: "a fox wearing a red scarf":*
+*Edited":*
 
-| Before | After |
-|---|---|
-| <img src="https://github.com/user-attachments/assets/TODO-qwen21-edit-before" alt="Qwen-Image 2.1 edit: input image" /> | <img src="https://github.com/user-attachments/assets/TODO-qwen21-edit-after" alt="Qwen-Image 2.1 edit: output image" /> |
+| Before | After | Prompt |
+|---|---|---|
+| <img width="100%" alt="thenoise_3758387159" src="https://github.com/user-attachments/assets/dfc04798-3d16-4606-b77c-66571c659220" /> | <img width="100%" alt="thenoise_edit_486449965" src="https://github.com/user-attachments/assets/b044fb9f-64b6-4384-8e15-5550dec04339"/> | Color image |
+| <img width="100%" alt="thenoise_3758387159" src="https://github.com/user-attachments/assets/8f73c45e-2964-48bb-ad99-f112ebaa306a" /> | <img width="100%" alt="thenoise_edit_4274534890" src="https://github.com/user-attachments/assets/bfea56c6-f906-452a-baf8-1f3dd962d5e0"/> | Make image realistic |
+|<img width="100%" alt="thenoise_3758387159" src="https://github.com/user-attachments/assets/86b1c67f-1d84-4abe-aa41-a1431e956ff2" /> | <img width="100%" alt="thenoise_edit_3432415454" src="https://github.com/user-attachments/assets/30c5ceaa-cbd2-4476-a560-e0d27faa54f1"/> | Write in diagonal on top "Rome, 2026" in hand-writing font. Make image colorful.|
+| <img height="600px" alt="generated-1786770947" src="https://github.com/user-attachments/assets/448e73f2-eb3c-41a1-92ca-08b787d865f4" /> | <img height="600px" alt="thenoise_edit_3337899808" src="https://github.com/user-attachments/assets/8b089a1a-afdc-49c3-9588-fe038a502a05" /> | Remove background from the image. Place the subject on "theNoise" logo text written in yellow Space Mono font.|
+| <img height="500px" alt="thenoise_2997842605" src="https://github.com/user-attachments/assets/a00c80fb-2a89-44fc-91f6-c07a9504a37d" /> <img height="500px" alt="9780847868445" src="https://github.com/user-attachments/assets/746782a4-0ec5-4ec3-8dee-c5c755848ee0" /> | <img width="100%" alt="thenoise_edit_1111812677" src="https://github.com/user-attachments/assets/fd66d24d-904e-4ce0-836f-ebb0822503ad" /> | Change the clothing of model from image1 to that of model from image2. Make hat larger.|
 
 ## Download
 
