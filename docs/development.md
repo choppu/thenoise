@@ -27,7 +27,7 @@ tests/                     test suite (runs without real weights)
 
 ### 1. Install `uv`
 
-[`uv`](https://github.com/astral-sh/uv) is the only prerequisite — it provides
+[`uv`](https://github.com/astral-sh/uv) is the only prerequisite - it provides
 the Python interpreter and installs every dependency:
 
 ```bash
@@ -52,7 +52,7 @@ that without needing any model weights yet:
 ./thenoise.sh --help
 ```
 
-This is the slow step — it downloads several GB of ROCm PyTorch wheels.
+This is the slow step - it downloads several GB of ROCm PyTorch wheels.
 Subsequent runs skip the torch install (detected via `import torch`).
 
 By default the script autodetects the GPU's architecture. Override with the
@@ -141,7 +141,7 @@ end-to-end generation including the first-run `torch.compile`.
 
 ## Contributing
 
-PRs are welcome — especially new model support. A model addition typically
+PRs are welcome - especially new model support. A model addition typically
 touches:
 
 1. **`thenoise/models/<name>.py`** — the adapter: `detect()` (checkpoint
@@ -156,7 +156,7 @@ touches:
 
 General rules:
 
-- Keep the one-model-at-a-time, explicit-flags design — no hidden config, no
+- Keep the one-model-at-a-time, explicit-flags design - no hidden config, no
   workflow layer.
 - Anything a request/checkpoint/model can set goes through the
   `request → checkpoint marker → model default` preference chain

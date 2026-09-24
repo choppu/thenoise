@@ -11,11 +11,11 @@ no sudo.
 
 - **Linux x86_64**
 - An **AMD GPU** with ROCm support. Targets:
-  - **Strix Halo** (gfx1151) — the primary, fully optimized target
-  - gfx1150 / gfx1152 — tested
+  - **Strix Halo** (gfx1151) - the primary, fully optimized target
+  - gfx1150 / gfx1152 - tested
 - **RAM:** 32 GB minimum for the small models (Anima ~5 GB, Z-Image ~21 GB);
   64 GB+ recommended; the 128 GB Strix Halo configuration runs everything.
-- **Disk:** see the download sizes on each model's page — plan for model files
+- **Disk:** see the download sizes on each model's page - plan for model files
   plus a few GB of headroom.
 
 You only need one model to get going. Anima (~5.4 GB) is the fastest way to a
@@ -74,7 +74,7 @@ Models land in `./models/<model>/` next to the bundle.
   --out fox.png
 ```
 
-**The first generation is slow** — the DiT is compiled with `torch.compile` on
+**The first generation is slow** - the DiT is compiled with `torch.compile` on
 load. Expect a minute or two of compilation (and some normal-looking warnings on
 the console); every generation after that runs at full speed with the cached
 compiled code. No configuration needed.
@@ -94,16 +94,16 @@ CLI runs:
   --host 127.0.0.1 --port 8000
 ```
 
-Then open <http://localhost:8000/> — Generate, Edit (editing-capable models) and
+Then open <http://localhost:8000/> - Generate, Edit (editing-capable models) and
 Upscale tabs, driven by whatever model is loaded.
 
 ## What next
 
-- [CLI reference](cli.md) — every `generate` / `edit` / `serve` / `upscale` flag
-- [HTTP API reference](api.md) — endpoints, request/response formats, curl examples
-- [Model pages](models/anima.md) — per-model download options, examples, settings
-- [Upscaling](cli.md#upscaling) — latent refine + Real-ESRGAN pixel upscaling, up to 8×
-- [Development & Contribution](development.md) — building from source, tests, releases
+- [CLI reference](cli.md) - every `generate` / `edit` / `serve` / `upscale` flag
+- [HTTP API reference](api.md) - endpoints, request/response formats, curl examples
+- [Model pages](models/) - per-model download options, examples, settings
+- [Upscaling](cli.md#upscaling) - latent refine + Real-ESRGAN pixel upscaling, up to 8×
+- [Development & Contribution](development.md) - building from source, tests, releases
 
 ## Troubleshooting
 
@@ -112,4 +112,5 @@ Upscale tabs, driven by whatever model is loaded.
 | `torch.compile` warnings on first run | Normal. They only happen while the DiT is being compiled. |
 | First generation takes minutes | Normal — see [first-run note](#3-generate-your-first-image). Subsequent runs are fast. |
 | `error while loading shared libraries` | Don't run the system Python against the bundle; always use `./bin/thenoise` (or `./bin/python3`). |
+| `libatomic.so.1: cannot open shared object file` at startup | Missing `libatomic` runtime library (seen on Fedora 44): install it with your package manager, e.g. `sudo dnf install libatomic`. Details in [#29](https://github.com/lemonade-sdk/thenoise/issues/29). |
 | GPU not detected | You're on the wrong bundle for your GPU — check `gfx` in the asset name against your hardware (gfx1151 for Strix Halo). |

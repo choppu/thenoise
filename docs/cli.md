@@ -1,8 +1,7 @@
 # CLI
 
 TheNoise's command-line interface. The model type is **auto-detected** from the
-DiT checkpoint — you never say "this is a Krea 2 model", you just point at the
-files.
+DiT checkpoint.
 
 > Commands assume a dev checkout (`.venv/bin/python`, `./thenoise.sh`). On a
 > [portable bundle](setup.md) use `./bin/thenoise` and `./bin/python3` instead.
@@ -86,7 +85,7 @@ Then open <http://localhost:8000/> for the web UI. Full endpoint reference:
 Edits an existing image from an instruction (image + prompt → edited image).
 Requires an editing-capable model — [Flux.2 Klein](models/flux2-klein.md),
 [Qwen-Image / Qwen-Image-Edit](models/qwen-image.md) and
-[Qwen-Image 2.1](models/qwen-image-2.1.md) — and shares all generation flags
+[Qwen-Image 2.1](models/qwen-image-2.1.md) - and shares all generation flags
 with `generate`.
 
 `--image` is repeatable: the **first** image is resized to 1024 on its largest
@@ -110,7 +109,7 @@ additional references.
 
 ## Upscale a single image
 
-Pixel-upscales an existing image. Model-free — no `--dit`/`--vae`/
+Pixel-upscales an existing image. Model-free - no `--dit`/`--vae`/
 `--text-encoder` needed:
 
 ```bash
@@ -137,7 +136,7 @@ are optional and can be combined.
 Every model ships a built-in **latent (SesquiLSR) upscaler** that runs in latent
 space before the VAE decode: it upscales the latent 2× and then runs a short,
 low-strength refine denoise at the upscaled size. This is the default
-`upscale_type` and needs **no extra model files** — a 2× upscale works out of the
+`upscale_type` and needs **no extra model files** - a 2× upscale works out of the
 box on any supported model.
 
 ```bash
@@ -151,7 +150,7 @@ box on any supported model.
 ### Pixel-domain upscaler (`no-refiner`, and beyond 2×)
 
 Pixel upscaling operates purely in pixel space (after decode) and uses a
-dedicated upscaler model — today Real-ESRGAN. It is **not** a model concern:
+dedicated upscaler model, Real-ESRGAN. It is **not** a model concern:
 the upscaler directory is server configuration (`--upscaler-dir`), and the named
 model is selected per-request via `pixel_upscaler`. Only the last-used upscaler
 is kept loaded (switched on change).
@@ -194,7 +193,7 @@ Place `.safetensors` LoRA files in a directory and point `--lora-dir` at it
   --out /tmp/city.png
 ```
 
-LoRA format is `filename:weight` — the `.safetensors` extension is appended
+LoRA format is `filename:weight` - the `.safetensors` extension is appended
 automatically. Omit `:weight` to use the default of `1.0`. LoRAs are switched
 in-memory without reloading the base model.
 

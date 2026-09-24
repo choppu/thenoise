@@ -6,14 +6,18 @@ TheNoise loads one model at a time and generates images from text prompts. Editi
 
 TheNoise can be used standalone, from the command line or through a webui or through an OpenAI-compatible server like [Lemonade](https://lemonade-server.ai/docs/dev/backends-reference/#backends), with which it is already integrated.
 
-<img width="2048" height="1066" alt="thenoise-main-screenshot" src="https://github.com/user-attachments/assets/afaf2d89-5857-4f50-995f-06fdf556a3c4" />
+<details open id="shot-main">
+  <summary>Main</summary>
+  <img width="2048" height="1066" alt="thenoise-main-screenshot" src="https://github.com/user-attachments/assets/afaf2d89-5857-4f50-995f-06fdf556a3c4" />
+</details>
 
-<details>
-  <summary>Edit tab</summary>
+<details id="shot-edit">
+  <summary>Edit</summary>
   <img width="2048" height="1066" alt="thenoise-edit" src="https://github.com/user-attachments/assets/17efedda-b887-4f87-b0c0-c151619b19ac" />
 </details>
-<details>
-  <summary>Upscale tab</summary> 
+
+<details id="shot-upscale">
+  <summary>Upscale</summary>
   <img width="2048" height="1066" alt="thenoise-upscaler" src="https://github.com/user-attachments/assets/f7ce89b7-fd25-4ad9-a3e4-d5e367530ab7" />
 </details>
 
@@ -30,14 +34,14 @@ TheNoise ships:
 
 ## Supported models
 
-| Model | On disk | Generate | Edit | Details |
-|---|---|---|---|---|
-| **Anima**, small and fast | ~5.4 GB | ✓ | — | [anima](docs/models/anima.md) |
-| **Krea 2**, highest image quality | ~35 GB | ✓ | — | [krea2](docs/models/krea2.md) |
-| **Z-Image / Z-Image-Turbo**, quality at 8 steps | ~21 GB | ✓ | — | [zimage](docs/models/zimage.md) |
-| **Flux.2 Klein 4B / 9B**, 4 steps, with editing | 12 / 25 GB | ✓ | ✓ | [flux2-klein](docs/models/flux2-klein.md) |
-| **Qwen-Image / Qwen-Image-Edit**, generation and editing | ~40 GB | ✓ | ✓ | [qwen-image](docs/models/qwen-image.md) |
-| **Qwen-Image 2.1**, generation and editing in one model | ~32 GB | ✓ | ✓ | [qwen-image-2.1](docs/models/qwen-image-2.1.md) |
+| Model | Generate | Edit | Details |
+|---|---|---|---|
+| **Anima**, small and fast | ✓ | — | [anima](docs/models/anima.md) |
+| **Krea 2**, highest image quality | ✓ | — | [krea2](docs/models/krea2.md) |
+| **Z-Image / Z-Image-Turbo**, quality at 8 steps | ✓ | — | [zimage](docs/models/zimage.md) |
+| **Flux.2 Klein 4B / 9B**, 4 steps, with editing | ✓ | ✓ | [flux2-klein](docs/models/flux2-klein.md) |
+| **Qwen-Image / Qwen-Image-Edit**, generation and editing | ✓ | ✓ | [qwen-image](docs/models/qwen-image.md) |
+| **Qwen-Image 2.1**, generation and editing in one model | ✓ | ✓ | [qwen-image-2.1](docs/models/qwen-image-2.1.md) |
 
 New models are added over time. PRs adding model support are welcome.
 

@@ -1,7 +1,6 @@
 # HTTP API
 
-Start the server with [`serve`](cli.md#serve-a-model-over-http) and TheNoise
-exposes a small JSON API plus the web UI at the root path.
+Start the server with [`serve`](cli.md#serve-a-model-over-http) and TheNoise exposes a small JSON API plus the web UI at the root path.
 
 > Commands assume a dev checkout (`./thenoise.sh`). On a [portable
 > bundle](setup.md) use `./bin/thenoise` instead.
@@ -33,7 +32,7 @@ exposes a small JSON API plus the web UI at the root path.
 ```
 
 `models` is empty until a DiT is loaded, and `capabilities` is the loaded
-adapter's `CAPABILITIES` dict verbatim (`{}` with no model) — the web UI uses it
+adapter's `CAPABILITIES` dict verbatim (`{}` with no model) - the web UI uses it
 to gate the Edit tab and the KV-cache control, and a request asking for a
 capability the model lacks is rejected with HTTP 400 rather than silently
 ignored.
@@ -116,7 +115,7 @@ curl -s localhost:8000/edit \
 ## `POST /upscale`
 
 Pixel-upscales an existing image by `upscale_factor`× with a named pixel
-upscaler. Unlike `/text2image`, this needs no diffusion model loaded — only an
+upscaler. Unlike `/text2image`, this needs no diffusion model loaded - only an
 upscaler configured via `--upscaler-dir`.
 
 | Field | Type | Default | Description |
