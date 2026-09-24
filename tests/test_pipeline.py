@@ -15,7 +15,7 @@ import torch
 
 from conftest import StubModel
 from thenoise.models.config import GenerateRequest, SamplingParams
-from thenoise.pipeline import PipelineController
+from thenoise.pipeline import PipelineController, _refine_schedule
 from thenoise.upscale.inference_adaptors import LatentFormatAdaptor
 from thenoise.upscale.pixel import PixelUpscalerManager
 from thenoise.utils.png import build_pnginfo
@@ -236,15 +236,15 @@ class _RefineSpyModel(StubModel):
 
 @pytest.mark.parametrize(
     "refine_steps,refine_denoise",
-    [(1, 0.1), (2, 0.25), (1, 0.3)],
-    ids=["1of10", "2of8", "truncated-schedule"],
+    [(1, 0.25), (2, 0.25), (3, 0.1)],
+    ids=["1step", "2steps", "lighter"],
 )
 def test_upscale_and_refine(refine_steps, refine_denoise):
-    """The refine is the last ``REFINE_STEPS`` of an INDEPENDENT schedule.
+    """The refine starts AT the ``REFINE_DENOISE`` sigma, for ``REFINE_STEPS`` steps.
 
-    ``new_steps = int(REFINE_STEPS / REFINE_DENOISE)`` (an int() truncation, not a
-    round), the noise level is that sub-schedule's first ``t``, and the noised
-    latent follows ComfyUI's CONST scaling ``σ·noise + (1-σ)·z``.
+    The strength is a sigma rather than a position in the model's schedule, so it
+    means the same thing on every model regardless of its shift. The noised latent
+    follows ComfyUI's CONST scaling ``σ·noise + (1-σ)·z``.
     """
     model = _RefineSpyModel()
     model.REFINE_STEPS = refine_steps
@@ -261,23 +261,76 @@ def test_upscale_and_refine(refine_steps, refine_denoise):
     assert model.upscaler.targets == [(16, 16)]
     assert out.shape == (1, model.LATENT_CHANNELS, 16, 16)
 
-    new_steps = int(refine_steps / refine_denoise)
     refine_params = model.refine_inputs[0][1]
-    assert refine_params.steps == new_steps  # the original step count is NOT reused
+    assert refine_params.steps == refine_steps  # the main step count is not reused
     assert (refine_params.height, refine_params.width) == (128, 128)
-
-    full = model.schedule(refine_params)
-    assert full is not None and len(full) == new_steps
-    sub = full[-refine_steps:]
-    strength = float(sub[0].t)
-    assert model.calls["denoise_step"] == refine_steps  # only the tail ran
+    assert model.calls["denoise_step"] == refine_steps
+    assert model.calls["schedule"] == 0  # the refine brings its own sub-schedule
 
     # ComfyUI CONST noise scaling ``σ·noise + (1-σ)·z``, reproduced with the seed.
     z_up = torch.full((1, model.LATENT_CHANNELS, 16, 16), 0.5)
     generator = torch.Generator(device="cpu").manual_seed(params.seed)
     noise = torch.randn(z_up.shape, generator=generator)
     noised = model.refine_inputs[0][0]
-    assert torch.allclose(noised, strength * noise + (1.0 - strength) * z_up)
+    assert torch.allclose(noised, refine_denoise * noise + (1.0 - refine_denoise) * z_up)
+
+
+@pytest.mark.parametrize(
+    "steps,sigma", [(1, 0.25), (2, 0.25), (4, 0.4)], ids=["1", "2", "4"]
+)
+def test_refine_schedule_integrates_sigma_down_to_zero(steps, sigma):
+    """Any step count starts at the requested sigma and lands exactly on x0."""
+    sub = _refine_schedule(sigma, steps, "cpu", torch.float32)
+    ts = [float(s.t) for s in sub]
+
+    assert len(sub) == steps
+    assert ts[0] == pytest.approx(sigma)
+    assert ts == sorted(ts, reverse=True)
+    assert min(ts) > 0.0  # every step is conditioned above 0
+    assert sum(float(s.delta) for s in sub) == pytest.approx(sigma)
+    # Tensors, not floats: denoise_step consumes Step.t like its own schedule()'s.
+    assert all(isinstance(s.t, torch.Tensor) for s in sub)
+
+
+class _TensorTimestepModel(_RefineSpyModel):
+    """Stub that consumes ``Step.t`` the way Anima does (``t.expand(...)``)."""
+
+    def denoise_step(self, latents, t, cond, guidance_scale, i):
+        self.calls["denoise_step"] += 1
+        t.expand(latents.shape[0])  # raises unless the timestep arrived as a tensor
+        return torch.zeros_like(latents)
+
+
+def test_refine_hands_denoise_step_a_timestep_tensor():
+    model = _TensorTimestepModel()
+    controller = _controller(model)
+
+    params = SamplingParams(
+        height=64, width=64, steps=2, seed=3, guidance_scale=1.0, sampler="euler"
+    )
+    out = controller._upscale_and_refine(
+        torch.ones(1, model.LATENT_CHANNELS, 8, 8), model.encode_prompt(None), params
+    )
+
+    assert out.shape == (1, model.LATENT_CHANNELS, 16, 16)
+    assert model.calls["denoise_step"] == model.REFINE_STEPS
+
+
+def test_refine_steps_zero_opts_out_of_the_refine():
+    """A model may skip the refine and keep the raw upscaled latent."""
+    model = _RefineSpyModel()
+    model.REFINE_STEPS = 0
+    controller = _controller(model)
+
+    params = SamplingParams(
+        height=64, width=64, steps=2, seed=3, guidance_scale=1.0, sampler="euler"
+    )
+    latents = torch.ones(1, model.LATENT_CHANNELS, 8, 8)
+    out = controller._upscale_and_refine(latents, model.encode_prompt(None), params)
+
+    assert out.shape == (1, model.LATENT_CHANNELS, 16, 16)  # still upscaled 2x
+    assert model.calls["denoise_step"] == 0
+    assert model.refine_inputs == []  # no noise, no prepare, no denoise
 
 
 def test_generate_with_upscale_refines_and_decodes_the_larger_latent():
@@ -288,7 +341,7 @@ def test_generate_with_upscale_refines_and_decodes_the_larger_latent():
     assert image.size == (128, 128)  # 64 * latent 2x
     assert model.calls["denoise_step"] == 2 + model.REFINE_STEPS
     assert model.calls["decode"] == 1
-    assert model.calls["schedule"] == 2  # main + refine, never a merged schedule
+    assert model.calls["schedule"] == 1  # only the main run asks the model
 
 
 # --------------------------------------------------------------------- postprocess

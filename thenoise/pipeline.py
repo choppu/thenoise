@@ -55,7 +55,7 @@ from PIL import Image
 from thenoise.locks import inference_lock
 from thenoise.models.base import DiffusionModel, Conditioning
 from thenoise.models.config import EncodePromptArgs, GenerateRequest, SamplingParams
-from thenoise.samplers import create_sampler
+from thenoise.samplers import Step, create_sampler
 from thenoise.samplers.euler import EulerSampler
 from thenoise.upscale.pixel import PixelUpscalerManager
 from thenoise.utils.pipeline_cache import PipelineCache
@@ -101,6 +101,31 @@ class _ResolvedRequest:
     pixel_upscaler: Optional[str]
     kv_cache: bool
     ref_method: str
+
+
+def _refine_schedule(
+    sigma: float,
+    steps: int,
+    device: str,
+    dtype: torch.dtype,
+) -> list[Step]:
+    """The refine's sub-schedule: ``steps`` Euler steps integrating ``sigma`` to 0.
+
+    Uniform in sigma, so the deltas sum to the starting sigma and the loop lands on
+    x0, and every step is still conditioned above 0 (only the integration reaches it).
+    Deliberately NOT the tail of the model's own schedule: a shifted grid leaves
+    whatever sigma the shift puts there at that index, so the same denoise value would 
+    not mean the same strength on every model.
+
+    ``Step.t``/``delta`` are tensors in the model's own device/dtype because
+    ``denoise_step`` consumes them the way it consumes its own ``schedule()`` output.
+    """
+    grid = torch.tensor(
+        [sigma * (1 - i / steps) for i in range(steps + 1)],
+        device=device,
+        dtype=dtype,
+    )
+    return [Step(t=grid[i], delta=grid[i] - grid[i + 1]) for i in range(steps)]
 
 
 class PipelineController:
@@ -657,9 +682,8 @@ class PipelineController:
             raw_up = upscaler(raw, target)
             z_up = adaptor.from_vae_latent(raw_up.float()).to(model.dtype)
 
-        # One short low-strength refine denoise at the upscaled size. The refine
-        # runs on an independent schedule (see ``_refine``), so the original
-        # ``steps`` count is deliberately NOT forwarded.
+        # One short low-strength refine denoise at the upscaled size. Only the size
+        # is forwarded: the refine brings its own sigma and step count (``_refine``).
         up_params = replace(
             params,
             height=scale * params.height,
@@ -673,22 +697,17 @@ class PipelineController:
         cond: Conditioning,
         params: SamplingParams,
     ) -> torch.Tensor:
-        """One low-strength refine denoise step on an already-clean latent."""
+        """A short low-strength refine denoise on an already-clean latent."""
         model = self.model
-        refine_steps = model.REFINE_STEPS
-        denoise = model.REFINE_DENOISE
-        new_steps = int(refine_steps / denoise)  # int(1/0.1) = 10
-
-        # Last ``refine_steps`` steps of an independent ``new_steps`` schedule.
-        refine_params = replace(params, steps=new_steps)
-        full = model.schedule(refine_params)
-        sub = full[-refine_steps:]
-        strength = float(sub[0].t)  # sigma_hat == the step's timestep
+        steps = model.REFINE_STEPS
+        sigma = model.REFINE_DENOISE
+        if steps <= 0 or sigma <= 0.0:
+            return z
 
         # ComfyUI CONST noise scaling: x = sigma*noise + (1-sigma)*z.
         generator = torch.Generator(device=model.device).manual_seed(params.seed)
         noise = torch.randn_like(z, generator=generator)
-        noised = strength * noise + (1.0 - strength) * z
+        noised = sigma * noise + (1.0 - sigma) * z
 
         # NOTE: this refine pass runs WITHOUT the reference image. ``ref`` is not
         # forwarded, so ``prepare_latent`` stashes ``_ref_tokens`` = None and the
@@ -696,10 +715,16 @@ class PipelineController:
         # For FluxKlein this is a deliberate simplification — in practice the
         # low-strength refine shows no visible ill effect — but keep it in mind if
         # the refine quality is ever revisited.
+        refine_params = replace(params, steps=steps)
         x = model.prepare_latent(noised, cond, refine_params)
         solver = EulerSampler(model)
         x = solver.sample(
-            x, sub, cond, params.guidance_scale, params.seed, desc="refining"
+            x,
+            _refine_schedule(sigma, steps, model.device, model.dtype),
+            cond,
+            params.guidance_scale,
+            params.seed,
+            desc="refining",
         )
         return model.finalize_latent(x, refine_params)
 

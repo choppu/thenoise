@@ -159,7 +159,7 @@ class DiffusionModel(ABC):
 
     UPSCALE_SCALE = 2
     REFINE_STEPS = 1
-    REFINE_DENOISE = 0.1
+    REFINE_DENOISE = 0.25
 
     # Model capabilities — which optional generation features this adapter actually
     # implements. Adapters override just the entries they differ on, e.g.
@@ -513,7 +513,7 @@ class DiffusionModel(ABC):
         # Undo any currently active LoRA
         if self._active_lora_result is not None:
             logger.debug("Undoing previous LoRA config")
-            undo_lora_on_model(dit, self._active_lora_result, torch.device(self.device))
+            undo_lora_on_model(dit, self._active_lora_result)
             self._active_lora_result = None
 
         # Apply new LoRAs
@@ -526,7 +526,7 @@ class DiffusionModel(ABC):
                 multipliers.append(weight)
 
             self._active_lora_result = apply_lora_to_model(
-                dit, lora_sds, multipliers, torch.device(self.device),
+                dit, lora_sds, multipliers,
                 dit_path=self.dit_path,
                 key_map=self._lora_key_map,
                 fusions=self.lora_fusions,
