@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="thenoise/ui/logo2.png" alt="TheNoise" width="360" />
+  <img src="thenoise/ui/logo2.png" alt="TheNoise" width="280" />
 </div>
 
 TheNoise is an open-source image generation / editing engine made specifically to run well on Strix Halo (gfx1151) and other ROCm-capable AMD iGPUs and dGPUs (gfx1150, gfx1152). It is tuned to perform extremely well on the machine it runs on.  
@@ -60,31 +60,34 @@ it is a good fit when:
 
 ## Performance
 
-TheNoise and ComfyUI on the same Strix Halo (gfx1151, 128 GB unified). Times
-are seconds per image, measured after a warmup run, and reported as
-**TheNoise / ComfyUI**.
+TheNoise is tuned for the hardware it runs on, and its performance is quite
+similar to ComfyUI's - and sometimes even better. The numbers below are
+seconds per image on a Strix Halo (gfx1151, 128 GB unified), measured after
+a warmup run.
 
 *Text to image (generation):*
 
-| Model & settings | 768×1024 | 1024×1024 | 1536×2048 |
-|---|---|---|---|
-| Krea 2 Turbo · BF16 · 8 steps | TBD / TBD | TBD / TBD | TBD / TBD |
-| Krea 2 Turbo · INT8-ConvRot · 8 steps | TBD / TBD | TBD / TBD | TBD / TBD |
-| Anima Turbo · 8 steps | TBD / TBD | TBD / TBD | TBD / TBD |
-| Z-Image Turbo · 8 steps | TBD / TBD | TBD / TBD | TBD / TBD |
-| Flux.2 Klein 9B · INT8-ConvRot · 4 steps | TBD / TBD | TBD / TBD | TBD / TBD |
-| Qwen-Image-Edit 2511 · BF16 · 4 steps | TBD / TBD | TBD / TBD | TBD / TBD |
+| Model & settings | 1024×1024 | 1536x2048 |
+|---|---|---|
+| Krea 2 Turbo · BF16 · 8 steps | 33.8s | 117.6s |
+| Krea 2 Turbo · INT8-ConvRot · 8 steps | 26.7s | 99s |
+| Anima Base · 20 steps · CGF 3 | 29.7s | 111s |
+| Anima Turbo · 8 steps | 6.6s | 25.1s |
+| Z-Image Turbo · 8 steps | 14.3s | 53.8s |
+| Flux.2 Klein 9B · INT8-ConvRot · 4 steps | 9.6s | 34.3s |
+| Qwen-Image 2512 · BF16 · 4 steps | 9.7s | 34.9s |
+| Qwen-Image 2.1 · BF16 · 25 steps · CFG 3 | 103s | >200s |
 
-*Image + instruction to edited image (editing):*
+*Image + simple instruction to edited image (editing):*
 
-| Model & settings | 768×1024 | 1024×1024 | 1536×2048 |
-|---|---|---|---|
-| Flux.2 Klein 9B · INT8-ConvRot · 4 steps | TBD / TBD | TBD / TBD | TBD / TBD |
-| Qwen-Image-Edit 2511 · BF16 · 4 steps | TBD / TBD | TBD / TBD | TBD / TBD |
-| Qwen-Image 2.1 · BF16 · 4 steps | TBD / TBD | TBD / TBD | TBD / TBD |
+| Model & settings | 1024×1024 · KV-cache OFF | 1024×1024 · KV-cache ON |
+|---|---|---|
+| Flux.2 Klein 9B · INT8-ConvRot · 4 steps | 14.2s | 10.6s |
+| Qwen-Image-Edit 2511 · BF16 · 4 steps | 15.8s | 10.6s |
+| Qwen-Image 2.1 · BF16 · 4 steps | 15.4s | 9.8s |
+| Qwen-Image 2.1 · INT8-ConvRot · 4 steps | 14.4s | 9.2s |
 
-<small>Exact test conditions (ComfyUI versions, settings, warmup protocol) will
-be documented here once the runs are complete.</small>
+<small>TheNoise 0.9.0, Strix Halo (gfx1151, 128 GB unified)</small>
 
 ## Quick start
 
