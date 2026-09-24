@@ -114,6 +114,13 @@ torchvision==$TORCHVISION_VER
 EOF
 pip_deep install --constraint /tmp/thenoise-constraints.txt "$REPO_ROOT"
 
+# Model downloads for end users: bundle the download script (so no checkout is
+# needed next to the archive) and its only dependency, huggingface-hub.
+say "Bundling model download helper (scripts/download.py + huggingface-hub)"
+mkdir -p "$ROOT/scripts"
+cp "$REPO_ROOT/scripts/download.py" "$ROOT/scripts/download.py"
+pip_deep install --constraint /tmp/thenoise-constraints.txt huggingface-hub
+
 # ROCm wheels ship only versioned .so files (libfoo.so.N) without the unversioned
 # libfoo.so dev symlinks consumers rely on. Create them now so the bundle is
 # self-consistent (see ensure_soname_symlinks below).
@@ -228,8 +235,11 @@ verify_env
 "$PY" -c "import torch; assert 'rocm' in torch.__version__, torch.__version__; print('torch', torch.__version__)"
 "$PY" -c "import torchvision; print('torchvision', torchvision.__version__)"
 "$PY" -c "import thenoise; print('thenoise import OK')"
+"$PY" -c "import huggingface_hub; print('huggingface_hub', huggingface_hub.__version__)"
+"$PY" "$ROOT/scripts/download.py" --model anima --dry-run | head -n1
 "$PY" -m thenoise --help >/dev/null 2>&1 || true
 bash -n "$ROOT/bin/thenoise"
+[ -f "$ROOT/scripts/download.py" ] || { echo "missing scripts/download.py"; exit 1; }
 echo "=== Bundle size ==="
 du -sh "$ROOT"
 du -sh "$SP_DIR"/torch "$SP_DIR"/_rocm_sdk_core "$SP_DIR"/triton 2>/dev/null || true

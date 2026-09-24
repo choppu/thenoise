@@ -609,13 +609,13 @@ class PipelineController:
                 raise ValueError(
                     f"upscale_factor > {model_scale} requires a pixel "
                     "upscaler; pass --pixel-upscaler PATH (or run "
-                    "scripts/download_esrgan.py)"
+                    "scripts/download.py --model esrgan)"
                 )
             if upscale_type == "no-refiner" and factor > 1.0:
                 raise ValueError(
                     "upscale_type='no-refiner' requires a pixel upscaler; "
                     "pass --pixel-upscaler PATH (or run "
-                    "scripts/download_esrgan.py)"
+                    "scripts/download.py --model esrgan)"
                 )
         else:
             # Max factor depends on the detected model scale: refined gets the
