@@ -159,7 +159,7 @@ class DiffusionModel(ABC):
 
     UPSCALE_SCALE = 2
     REFINE_STEPS = 1
-    REFINE_DENOISE = 0.1
+    REFINE_DENOISE = 0.25
 
     # Model capabilities — which optional generation features this adapter actually
     # implements. Adapters override just the entries they differ on, e.g.
